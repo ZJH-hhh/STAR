@@ -1,0 +1,98 @@
+INFO - 03/12/26 07:14:40 - 0:00:00 - ============ Initialized logger ============
+INFO - 03/12/26 07:14:40 - 0:00:00 - JK: last
+                                     command: python run.py --dataset tox21 --gpu 0 --random_seed 0 --n_support 10 --n_query 8 --episode 2000 --eval_step 100 --test_batch_size 128 --mol_num_layer 5 --emb_dim 300 --mol_dropout '0.1' --mol_graph_pooling mean --mol_gnn_type gin --rel_layer 2 --rel_hidden_dim 128 --rel_dropout '0.1' --rel_pre_dropout '0.1' --rel_norm 1 --rel_top_k 1 --num_relation_attr 3 --inner_lr '0.05' --meta_lr '2e-4' --weight_decay '5e-5' --inner_update_step 3 --inner_tasks 10 --pool_num 20 --task_lr '5e-4' --task_hid_dim 10 --nce_t '0.08' --contr_w '0.05' --exp_name ablation_tox21_10shot --exp_id full_model --relation_backend krgts --use_semantic_sampler 1 --use_ltafm 1 --use_knowledge_edges both --know_weight '0.4' --know_temp '1.5' --know_warmup 100 --know_ramp 100 --know_hold 0 --know_decay 0 --semantic_temperature '0.1' --semantic_similarity_weight '0.5' --semantic_adjust_mode additive --semantic_reward_bonus '0.1' --semantic_warmup 0 --ltafm_hidden_dim 512 --ltafm_gamma_init '0.0' --ltafm_diversity_weight '0.005' --exp_id "full_model"
+                                     contr_w: 0.05
+                                     data_root: data
+                                     dataset: tox21
+                                     dump_path: logs/
+                                     emb_dim: 300
+                                     episode: 2000
+                                     eval_step: 100
+                                     exp_id: full_model
+                                     exp_name: ablation_tox21_10shot
+                                     gpu: 0
+                                     inner_lr: 0.05
+                                     inner_tasks: 10
+                                     inner_update_step: 3
+                                     know_decay: 0
+                                     know_hold: 0
+                                     know_ramp: 100
+                                     know_temp: 1.5
+                                     know_warmup: 100
+                                     know_weight: 0.4
+                                     ltafm_diversity_weight: 0.005
+                                     ltafm_gamma_init: 0.0
+                                     ltafm_hidden_dim: 512
+                                     ltafm_semantic_dim: 768
+                                     meta_lr: 0.0002
+                                     mol_batch_norm: 1
+                                     mol_dropout: 0.1
+                                     mol_gnn_type: gin
+                                     mol_graph_pooling: mean
+                                     mol_num_layer: 5
+                                     mol_pretrain_load_path: None
+                                     n_query: 8
+                                     n_support: 10
+                                     n_test_tasks: 200
+                                     nce_t: 0.08
+                                     num_relation_attr: 3
+                                     pool_num: 20
+                                     random_seed: 0
+                                     rel_batch_norm: 1
+                                     rel_dropout: 0.1
+                                     rel_edge_hidden_dim: 100
+                                     rel_edge_n_layer: 2
+                                     rel_edge_type: 1
+                                     rel_hidden_dim: 128
+                                     rel_layer: 2
+                                     rel_nan_type: nan
+                                     rel_nan_w: 1.0
+                                     rel_norm: 1
+                                     rel_pre_dropout: 0.1
+                                     rel_top_k: 1
+                                     relation_backend: krgts
+                                     second_order: 1
+                                     semantic_adjust_mode: additive
+                                     semantic_embedding_path: data/embeddings/tox21/tox21_property_embeddings.pt
+                                     semantic_min_similarity: -1.0
+                                     semantic_reward_bonus: 0.1
+                                     semantic_similarity_weight: 0.5
+                                     semantic_temperature: 0.1
+                                     semantic_warmup: 0
+                                     task_hid_dim: 10
+                                     task_lr: 0.0005
+                                     task_sampling: random
+                                     task_t: 1
+                                     test_auxi_task_num: None
+                                     test_batch_size: 128
+                                     train_auxi_task_num: None
+                                     use_knowledge_edges: both
+                                     use_ltafm: True
+                                     use_semantic_sampler: True
+                                     weight_decay: 5e-05
+INFO - 03/12/26 07:14:40 - 0:00:00 - The experiment will be stored in logs/0312-ablation_tox21_10shot/full_model
+                                     
+INFO - 03/12/26 07:14:40 - 0:00:00 - Running command: python run.py --dataset tox21 --gpu 0 --random_seed 0 --n_support 10 --n_query 8 --episode 2000 --eval_step 100 --test_batch_size 128 --mol_num_layer 5 --emb_dim 300 --mol_dropout '0.1' --mol_graph_pooling mean --mol_gnn_type gin --rel_layer 2 --rel_hidden_dim 128 --rel_dropout '0.1' --rel_pre_dropout '0.1' --rel_norm 1 --rel_top_k 1 --num_relation_attr 3 --inner_lr '0.05' --meta_lr '2e-4' --weight_decay '5e-5' --inner_update_step 3 --inner_tasks 10 --pool_num 20 --task_lr '5e-4' --task_hid_dim 10 --nce_t '0.08' --contr_w '0.05' --exp_name ablation_tox21_10shot --exp_id full_model --relation_backend krgts --use_semantic_sampler 1 --use_ltafm 1 --use_knowledge_edges both --know_weight '0.4' --know_temp '1.5' --know_warmup 100 --know_ramp 100 --know_hold 0 --know_decay 0 --semantic_temperature '0.1' --semantic_similarity_weight '0.5' --semantic_adjust_mode additive --semantic_reward_bonus '0.1' --semantic_warmup 0 --ltafm_hidden_dim 512 --ltafm_gamma_init '0.0' --ltafm_diversity_weight '0.005'
+INFO - 03/12/26 07:14:40 - 0:00:01 - SemanticGuidedSampler enabled with weight=0.5
+INFO - 03/12/26 07:20:42 - 0:06:02 - 100 | score: 0.81939, best_score: 0.81939
+INFO - 03/12/26 07:26:42 - 0:12:02 - 200 | score: 0.83050, best_score: 0.83050
+INFO - 03/12/26 07:32:44 - 0:18:05 - 300 | score: 0.84060, best_score: 0.84060
+INFO - 03/12/26 07:38:46 - 0:24:06 - 400 | score: 0.83914, best_score: 0.84060
+INFO - 03/12/26 07:44:46 - 0:30:07 - 500 | score: 0.83427, best_score: 0.84060
+INFO - 03/12/26 07:50:47 - 0:36:08 - 600 | score: 0.84921, best_score: 0.84921
+INFO - 03/12/26 07:56:52 - 0:42:12 - 700 | score: 0.85179, best_score: 0.85179
+INFO - 03/12/26 08:02:54 - 0:48:15 - 800 | score: 0.86257, best_score: 0.86257
+INFO - 03/12/26 08:08:54 - 0:54:15 - 900 | score: 0.85751, best_score: 0.86257
+INFO - 03/12/26 08:14:56 - 1:00:16 - 1000 | score: 0.84447, best_score: 0.86257
+INFO - 03/12/26 08:20:56 - 1:06:17 - 1100 | score: 0.86111, best_score: 0.86257
+INFO - 03/12/26 08:26:58 - 1:12:19 - 1200 | score: 0.85538, best_score: 0.86257
+INFO - 03/12/26 08:32:59 - 1:18:20 - 1300 | score: 0.86102, best_score: 0.86257
+INFO - 03/12/26 08:38:59 - 1:24:20 - 1400 | score: 0.86607, best_score: 0.86607
+INFO - 03/12/26 08:44:59 - 1:30:20 - 1500 | score: 0.87301, best_score: 0.87301
+INFO - 03/12/26 08:51:01 - 1:36:21 - 1600 | score: 0.86670, best_score: 0.87301
+INFO - 03/12/26 08:57:03 - 1:42:24 - 1700 | score: 0.86126, best_score: 0.87301
+INFO - 03/12/26 09:03:06 - 1:48:27 - 1800 | score: 0.85096, best_score: 0.87301
+INFO - 03/12/26 09:09:07 - 1:54:27 - 1900 | score: 0.86191, best_score: 0.87301
+INFO - 03/12/26 09:15:08 - 2:00:28 - 2000 | score: 0.86819, best_score: 0.87301
+INFO - 03/12/26 09:15:08 - 2:00:28 - best score: 0.87301
+INFO - 03/12/26 09:15:08 - 2:00:28 - time cost: 3.21006s

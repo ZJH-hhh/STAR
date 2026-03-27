@@ -1,0 +1,97 @@
+INFO - 03/11/26 16:24:26 - 0:00:00 - ============ Initialized logger ============
+INFO - 03/11/26 16:24:26 - 0:00:00 - JK: last
+                                     command: python run.py --dataset tox21 --gpu 0 --random_seed 0 --n_support 10 --n_query 8 --episode 2000 --eval_step 100 --test_batch_size 128 --mol_num_layer 5 --emb_dim 300 --mol_dropout '0.1' --mol_graph_pooling mean --mol_gnn_type gin --rel_layer 2 --rel_hidden_dim 128 --rel_dropout '0.1' --rel_pre_dropout '0.1' --rel_norm 1 --rel_top_k 1 --num_relation_attr 3 --inner_lr '0.05' --meta_lr '2e-4' --weight_decay '5e-5' --inner_update_step 3 --inner_tasks 10 --pool_num 20 --task_lr '5e-4' --task_hid_dim 10 --nce_t '0.08' --contr_w '0.05' --exp_name ablation_tox21_10shot --exp_id exp1_baseline --relation_backend baseline --use_semantic_sampler 0 --use_ltafm 0 --exp_id "exp1_baseline"
+                                     contr_w: 0.05
+                                     data_root: data
+                                     dataset: tox21
+                                     dump_path: logs/
+                                     emb_dim: 300
+                                     episode: 2000
+                                     eval_step: 100
+                                     exp_id: exp1_baseline
+                                     exp_name: ablation_tox21_10shot
+                                     gpu: 0
+                                     inner_lr: 0.05
+                                     inner_tasks: 10
+                                     inner_update_step: 3
+                                     know_decay: 0
+                                     know_hold: 0
+                                     know_ramp: 100
+                                     know_temp: 1.5
+                                     know_warmup: 100
+                                     know_weight: 0.4
+                                     ltafm_diversity_weight: 0.01
+                                     ltafm_gamma_init: 0.0
+                                     ltafm_hidden_dim: 256
+                                     ltafm_semantic_dim: 768
+                                     meta_lr: 0.0002
+                                     mol_batch_norm: 1
+                                     mol_dropout: 0.1
+                                     mol_gnn_type: gin
+                                     mol_graph_pooling: mean
+                                     mol_num_layer: 5
+                                     mol_pretrain_load_path: None
+                                     n_query: 8
+                                     n_support: 10
+                                     n_test_tasks: 200
+                                     nce_t: 0.08
+                                     num_relation_attr: 3
+                                     pool_num: 20
+                                     random_seed: 0
+                                     rel_batch_norm: 1
+                                     rel_dropout: 0.1
+                                     rel_edge_hidden_dim: 100
+                                     rel_edge_n_layer: 2
+                                     rel_edge_type: 1
+                                     rel_hidden_dim: 128
+                                     rel_layer: 2
+                                     rel_nan_type: nan
+                                     rel_nan_w: 1.0
+                                     rel_norm: 1
+                                     rel_pre_dropout: 0.1
+                                     rel_top_k: 1
+                                     relation_backend: baseline
+                                     second_order: 1
+                                     semantic_adjust_mode: additive
+                                     semantic_embedding_path: 
+                                     semantic_min_similarity: -1.0
+                                     semantic_reward_bonus: 0.1
+                                     semantic_similarity_weight: 0.5
+                                     semantic_temperature: 0.1
+                                     semantic_warmup: 0
+                                     task_hid_dim: 10
+                                     task_lr: 0.0005
+                                     task_sampling: random
+                                     task_t: 1
+                                     test_auxi_task_num: None
+                                     test_batch_size: 128
+                                     train_auxi_task_num: None
+                                     use_knowledge_edges: none
+                                     use_ltafm: False
+                                     use_semantic_sampler: False
+                                     weight_decay: 5e-05
+INFO - 03/11/26 16:24:26 - 0:00:00 - The experiment will be stored in logs/0311-ablation_tox21_10shot/exp1_baseline
+                                     
+INFO - 03/11/26 16:24:26 - 0:00:00 - Running command: python run.py --dataset tox21 --gpu 0 --random_seed 0 --n_support 10 --n_query 8 --episode 2000 --eval_step 100 --test_batch_size 128 --mol_num_layer 5 --emb_dim 300 --mol_dropout '0.1' --mol_graph_pooling mean --mol_gnn_type gin --rel_layer 2 --rel_hidden_dim 128 --rel_dropout '0.1' --rel_pre_dropout '0.1' --rel_norm 1 --rel_top_k 1 --num_relation_attr 3 --inner_lr '0.05' --meta_lr '2e-4' --weight_decay '5e-5' --inner_update_step 3 --inner_tasks 10 --pool_num 20 --task_lr '5e-4' --task_hid_dim 10 --nce_t '0.08' --contr_w '0.05' --exp_name ablation_tox21_10shot --exp_id exp1_baseline --relation_backend baseline --use_semantic_sampler 0 --use_ltafm 0
+INFO - 03/11/26 16:31:01 - 0:06:35 - 100 | score: 0.78101, best_score: 0.78101
+INFO - 03/11/26 16:37:28 - 0:13:02 - 200 | score: 0.76710, best_score: 0.78101
+INFO - 03/11/26 16:43:52 - 0:19:26 - 300 | score: 0.76344, best_score: 0.78101
+INFO - 03/11/26 16:50:21 - 0:25:55 - 400 | score: 0.82758, best_score: 0.82758
+INFO - 03/11/26 16:56:52 - 0:32:27 - 500 | score: 0.82451, best_score: 0.82758
+INFO - 03/11/26 17:03:23 - 0:38:57 - 600 | score: 0.83581, best_score: 0.83581
+INFO - 03/11/26 17:09:53 - 0:45:27 - 700 | score: 0.84935, best_score: 0.84935
+INFO - 03/11/26 17:16:23 - 0:51:57 - 800 | score: 0.84321, best_score: 0.84935
+INFO - 03/11/26 17:22:53 - 0:58:27 - 900 | score: 0.84084, best_score: 0.84935
+INFO - 03/11/26 17:29:22 - 1:04:56 - 1000 | score: 0.84762, best_score: 0.84935
+INFO - 03/11/26 17:35:50 - 1:11:24 - 1100 | score: 0.79141, best_score: 0.84935
+INFO - 03/11/26 17:42:19 - 1:17:53 - 1200 | score: 0.85317, best_score: 0.85317
+INFO - 03/11/26 17:48:48 - 1:24:22 - 1300 | score: 0.85947, best_score: 0.85947
+INFO - 03/11/26 17:55:22 - 1:30:56 - 1400 | score: 0.81876, best_score: 0.85947
+INFO - 03/11/26 18:01:54 - 1:37:28 - 1500 | score: 0.85423, best_score: 0.85947
+INFO - 03/11/26 18:08:24 - 1:43:58 - 1600 | score: 0.84686, best_score: 0.85947
+INFO - 03/11/26 18:14:54 - 1:50:28 - 1700 | score: 0.81832, best_score: 0.85947
+INFO - 03/11/26 18:21:23 - 1:56:57 - 1800 | score: 0.83179, best_score: 0.85947
+INFO - 03/11/26 18:27:52 - 2:03:26 - 1900 | score: 0.80821, best_score: 0.85947
+INFO - 03/11/26 18:34:21 - 2:09:55 - 2000 | score: 0.84294, best_score: 0.85947
+INFO - 03/11/26 18:34:21 - 2:09:55 - best score: 0.85947
+INFO - 03/11/26 18:34:21 - 2:09:55 - time cost: 3.46984s
