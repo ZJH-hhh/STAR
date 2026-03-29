@@ -1,0 +1,56 @@
+GSMeta(
+  (mol_encoder): GNN_Encoder(
+    (gnn): GNN(
+      (x_embedding1): Embedding(120, 300)
+      (x_embedding2): Embedding(3, 300)
+      (gnns): ModuleList(
+        (0-4): 5 x GINConv()
+      )
+      (batch_norms): ModuleList(
+        (0-4): 5 x BatchNorm1d(300, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+  )
+  (ltafm): TaskAdaptiveModulator(
+    (film): FiLMLayer(
+      (mlp): Sequential(
+        (0): Linear(in_features=11, out_features=512, bias=True)
+        (1): LayerNorm((512,), eps=1e-05, elementwise_affine=True)
+        (2): ReLU()
+        (3): Dropout(p=0.1, inplace=False)
+        (4): Linear(in_features=512, out_features=600, bias=True)
+      )
+    )
+  )
+  (relation_net): KRGTSRelation(
+    (task_emb): Embedding(12, 300)
+    (pre_dropout): Dropout(p=0.1, inplace=False)
+    (input_proj): Linear(in_features=300, out_features=128, bias=True)
+    (graph_encoder): HMRGNN(
+      (edge_type_emb): Embedding(4, 128)
+      (int_edge_attr): ModuleList(
+        (0): Embedding(3, 128)
+      )
+      (float_edge_attr): ModuleList(
+        (0-1): 2 x BondFloatRBF(
+          (rbf): RBF()
+          (linear): Linear(in_features=20, out_features=128, bias=True)
+        )
+      )
+      (edge_linear): Linear(in_features=256, out_features=128, bias=True)
+      (dropout): Dropout(p=0.1, inplace=False)
+      (act): LeakyReLU(negative_slope=0.01)
+      (blocks): ModuleList(
+        (0-3): 4 x HMRGNNConv()
+      )
+      (out_linear): Linear(in_features=256, out_features=128, bias=True)
+      (out_bn): BatchNorm1d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+    )
+    (classifier): Sequential(
+      (0): Linear(in_features=256, out_features=128, bias=True)
+      (1): BatchNorm1d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      (2): ReLU()
+      (3): Linear(in_features=128, out_features=1, bias=True)
+    )
+  )
+)

@@ -15,8 +15,7 @@
 #   Exp-8: Full Model (完整模型)
 # =============================================================================
 
-#SBATCH --chdir=/home/zjhzjh/workdir/GSKLTA
-#SBATCH --job-name=ablation           # 任务名称
+#SBATCH --job-name=bert           # 任务名称
 #SBATCH --partition=gpu-l20      # 请求的分区
 #SBATCH --nodes=1                         # 请求一个节点
 #SBATCH --ntasks=1                        # 请求一个任务
@@ -63,7 +62,7 @@ COMMON_ARGS="--dataset ${DATASET} \
     --rel_norm 1 \
     --rel_top_k 1 \
     --num_relation_attr 3 \
-    --inner_lr 0.005 \
+    --inner_lr 0.05 \
     --meta_lr 2e-4 \
     --weight_decay 5e-5 \
     --inner_update_step 3 \

@@ -9,12 +9,11 @@
 # =============================================================================
 
 
-#SBATCH --chdir=/home/zjhzjh/workdir/GSKLTA
-#SBATCH --job-name=pre_train_tox2110_lr0.05           # 任务名称
-#SBATCH --partition=gpu-a10      # 请求的分区
+#SBATCH --job-name=tox2110_lr0.05           # 任务名称
+#SBATCH --partition=gpu-a100      # 请求的分区
 #SBATCH --nodes=1                         # 请求一个节点
 #SBATCH --ntasks=1                        # 请求一个任务
-#SBATCH --cpus-per-task=24                # 每个任务使用一个 CPU
+#SBATCH --cpus-per-task=20                # 每个任务使用一个 CPU
 #SBATCH --gres=gpu:1
 
 
@@ -94,7 +93,7 @@ echo "=========================================="
 
 python run.py ${COMMON_ARGS} \
     --exp_name ltafm \
-    --exp_id pre_${DATASET}_${N_SUPPORT}shot_${inner_lr} \
+    --exp_id ${DATASET}_${N_SUPPORT}shot_${inner_lr} \
     --use_semantic_sampler 1 \
     --semantic_temperature 0.1 \
     --semantic_similarity_weight 0.5 \
