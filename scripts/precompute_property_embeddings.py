@@ -34,6 +34,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from data.property_descriptions import (SIDER_DESCRIPTIONS, TOX21_DESCRIPTIONS, MUV_DESCRIPTIONS,
                                         PCBA_DESCRIPTIONS, get_all_descriptions)
+from semantic_utils import SEMANTIC_EMBEDDING_DIRS, normalize_semantic_encoder
 
 
 def encode_with_bert(descriptions: dict, model_name: str = "bert-base-uncased") -> dict:
@@ -332,11 +333,11 @@ def main():
     parser.add_argument("--dataset", type=str, default="sider",
                         help="数据集名称 (sider, tox21, muv, pcba, toxcast-*, 或 all)")
     parser.add_argument("--encoder", type=str, default="tfidf",
-                        choices=["bert", "sentence-transformers", "tfidf"],
+                        choices=["bert", "sbert", "sentence-transformers", "tfidf"],
                         help="编码器类型")
     parser.add_argument("--model_name", type=str, default=None,
                         help="模型名称（覆盖默认值）")
-    parser.add_argument("--output_dir", type=str, default="data/embeddings",
+    parser.add_argument("--output_dir", type=str, default=None,
                         help="输出目录")
     parser.add_argument("--data_root", type=str, default="data",
                         help="数据根目录")
@@ -344,6 +345,7 @@ def main():
                         help="生成相似度矩阵可视化")
     
     args = parser.parse_args()
+    args.encoder = normalize_semantic_encoder(args.encoder)
     
     # 确定要处理的数据集
     if args.dataset == "all":
@@ -362,18 +364,20 @@ def main():
     # 确定编码器
     encoder_fn = {
         "bert": encode_with_bert,
-        "sentence-transformers": encode_with_sentence_transformers,
+        "sbert": encode_with_sentence_transformers,
         "tfidf": encode_with_tfidf,
     }[args.encoder]
     
     # 默认模型名
     default_models = {
         "bert": "bert-base-uncased",
-        "sentence-transformers": "all-MiniLM-L6-v2",
+        "sbert": "all-MiniLM-L6-v2",
         "tfidf": None,
     }
     model_name = args.model_name or default_models[args.encoder]
     
+    if args.output_dir is None:
+        args.output_dir = SEMANTIC_EMBEDDING_DIRS[args.encoder]
     output_dir = PROJECT_ROOT / args.output_dir
     data_root = PROJECT_ROOT / args.data_root
     
@@ -453,4 +457,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

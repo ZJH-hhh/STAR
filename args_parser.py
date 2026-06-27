@@ -1,5 +1,7 @@
 import argparse
 
+from semantic_utils import default_semantic_embedding_path, normalize_semantic_encoder
+
 
 def args_parser():
     parser = argparse.ArgumentParser()
@@ -34,7 +36,7 @@ def args_parser():
     # relation net
     parser.add_argument("--rel_layer", default=2, type=int)
     parser.add_argument("--rel_edge_n_layer", default=2, type=int)
-    parser.add_argument("--rel_top_k", default=None, type=int)
+    parser.add_argument("--rel_top_k", default=1, type=int)
     parser.add_argument("--rel_edge_hidden_dim", default=100, type=int)
     parser.add_argument("--rel_dropout", default=0.1, type=float)
     parser.add_argument("--rel_pre_dropout", default=0.1, type=float)
@@ -43,7 +45,7 @@ def args_parser():
     parser.add_argument("--rel_batch_norm", default=1, type=int)
     parser.add_argument("--rel_edge_type", default=1, type=int)
     # relation backend (Stage B)
-    parser.add_argument("--relation_backend", default='baseline', type=str,
+    parser.add_argument("--relation_backend", default='krgts', type=str,
                         choices=['baseline', 'krgts'],
                         help="baseline: TaskRelationNet; krgts: HMRGNN-based relation net")
     parser.add_argument("--rel_hidden_dim", default=128, type=int,
@@ -53,7 +55,7 @@ def args_parser():
     parser.add_argument("--num_relation_attr", default=3, type=int,
                         help="Number of relation attribute bins (prop/sca/gro) for KRGTS backend")
     # knowledge-edge fusion controls
-    parser.add_argument("--use_knowledge_edges", default='none', type=str,
+    parser.add_argument("--use_knowledge_edges", default='both', type=str,
                         choices=['none', 'sca', 'gro', 'both'],
                         help="Fuse scaffold/group similarity edges into relation graph")
     parser.add_argument("--know_weight", default=0.4, type=float,
@@ -71,10 +73,10 @@ def args_parser():
 
     # maml
     parser.add_argument("--inner_lr", default=0.05, type=float)
-    parser.add_argument("--meta_lr", default=5e-4, type=float)
+    parser.add_argument("--meta_lr", default=2e-4, type=float)
     parser.add_argument("--weight_decay", default=5e-5, type=float)
     parser.add_argument("--second_order", default=1, type=int)
-    parser.add_argument("--inner_update_step", default=1, type=int)
+    parser.add_argument("--inner_update_step", default=3, type=int)
     parser.add_argument("--inner_tasks", default=10, type=int)
 
     # few-shot
@@ -97,8 +99,11 @@ def args_parser():
     parser.add_argument("--task_t", default=1, type=float)
 
     # Semantic-Guided Task Sampling (LLM-based Property Descriptions)
-    parser.add_argument("--use_semantic_sampler", default=0, type=int,
+    parser.add_argument("--use_semantic_sampler", default=1, type=int,
                         help="Enable semantic-guided auxiliary task sampling")
+    parser.add_argument("--semantic_encoder", default="tfidf", type=str,
+                        choices=["tfidf", "bert", "sbert", "sentence-transformers"],
+                        help="Text encoder used to build property embeddings")
     parser.add_argument("--semantic_embedding_path", default="", type=str,
                         help="Path to precomputed property embeddings (auto-set if empty)")
     parser.add_argument("--semantic_temperature", default=0.1, type=float,
@@ -116,15 +121,15 @@ def args_parser():
                         help="Episodes to keep semantic guidance disabled (warm-up)")
     
     # L-TAFM: Task-Adaptive Feature Modulation (Innovation 3)
-    parser.add_argument("--use_ltafm", default=0, type=int,
+    parser.add_argument("--use_ltafm", default=1, type=int,
                         help="Enable LLM-driven task-adaptive feature modulation (FiLM)")
     parser.add_argument("--ltafm_semantic_dim", default=768, type=int,
                         help="Dimension of LLM semantic embeddings (default: SciBERT 768)")
-    parser.add_argument("--ltafm_hidden_dim", default=256, type=int,
+    parser.add_argument("--ltafm_hidden_dim", default=512, type=int,
                         help="Hidden dimension for L-TAFM MLP")
     parser.add_argument("--ltafm_gamma_init", default=0.0, type=float,
                         help="Initialization bias for gamma (0.0 -> initial gamma ≈ 1)")
-    parser.add_argument("--ltafm_diversity_weight", default=0.01, type=float,
+    parser.add_argument("--ltafm_diversity_weight", default=0.005, type=float,
                         help="Weight for gamma diversity regularization loss")
 
     args = parser.parse_args()
@@ -134,15 +139,14 @@ def args_parser():
         args.rel_top_k =args.n_support - 1 if args.n_support > 1 else 1
     
     # Semantic Sampler flags
+    args.semantic_encoder = normalize_semantic_encoder(args.semantic_encoder)
     args.use_semantic_sampler = bool(args.use_semantic_sampler)
     if args.use_semantic_sampler and not args.semantic_embedding_path:
-        # Auto-set embedding path based on dataset (with subdirectory structure)
-        args.semantic_embedding_path = f"data/embeddings/{args.dataset}/{args.dataset}_property_embeddings.pt"
+        args.semantic_embedding_path = default_semantic_embedding_path(args.dataset, args.semantic_encoder)
     
     # L-TAFM flags
     args.use_ltafm = bool(args.use_ltafm)
     if args.use_ltafm and not args.semantic_embedding_path:
-        # Auto-set embedding path (L-TAFM requires semantic embeddings)
-        args.semantic_embedding_path = f"data/embeddings/{args.dataset}/{args.dataset}_property_embeddings.pt"
+        args.semantic_embedding_path = default_semantic_embedding_path(args.dataset, args.semantic_encoder)
     
     return args

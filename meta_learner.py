@@ -1,3 +1,6 @@
+import csv
+import os
+
 import torch
 from torch import nn
 import torch.optim as optim
@@ -98,6 +101,130 @@ class MetaLearner:
         
         self.opt = optim.AdamW(opt_params, lr=args.meta_lr, weight_decay=args.weight_decay)
 
+    def save_checkpoint(self, save_dir, epoch, score, is_best=False):
+        os.makedirs(save_dir, exist_ok=True)
+        checkpoint = {
+            "epoch": int(epoch),
+            "score": float(score),
+            "is_best": bool(is_best),
+            "model_state_dict": self.maml.module.state_dict(),
+            "task_selector_state_dict": self.task_selector.state_dict(),
+            "optimizer_state_dict": self.opt.state_dict(),
+            "task_optimizer_state_dict": self.task_opt.state_dict(),
+            "args": vars(self.args),
+            "train_task_range": list(self.train_task_range),
+            "test_task_range": list(self.test_task_range),
+        }
+        path = os.path.join(save_dir, "best_model.pt" if is_best else "checkpoint.pt")
+        torch.save(checkpoint, path)
+        return path
+
+    def _get_task_names(self):
+        path = getattr(self.args, "semantic_embedding_path", "")
+        if path and os.path.exists(path):
+            try:
+                emb_data = torch.load(path, map_location="cpu")
+                names = emb_data.get("sorted_names", emb_data.get("property_names"))
+                if names and len(names) == self.dataset.total_tasks:
+                    return list(names)
+            except Exception as exc:
+                logger.warning(f"Could not read task names from semantic embeddings: {exc}")
+
+        try:
+            with open(self.dataset.raw_paths[0], newline="") as fin:
+                header = next(csv.reader(fin))
+            y_idx = self.dataset.names[self.dataset.name][4]
+            return header[y_idx]
+        except Exception as exc:
+            logger.warning(f"Could not infer task names from raw dataset header: {exc}")
+            return [f"task_{idx}" for idx in range(self.dataset.total_tasks)]
+
+    def export_ltafm_modulation(self, save_dir, epoch, score=None, is_best=False):
+        model = self.maml.module
+        if not getattr(model, "use_ltafm", False) or model.ltafm is None:
+            return None
+
+        out_dir = os.path.join(save_dir, "ltafm_mechanistic")
+        os.makedirs(out_dir, exist_ok=True)
+
+        was_training = model.training
+        model.eval()
+        with torch.no_grad():
+            semantic_embeddings = model.semantic_embeddings.detach()
+            modulation = model.ltafm.film.mlp(semantic_embeddings)
+            gamma, beta = torch.chunk(modulation, 2, dim=-1)
+            gamma = F.softplus(gamma) + 1e-8
+
+            gamma_cpu = gamma.detach().cpu()
+            beta_cpu = beta.detach().cpu()
+            task_names = self._get_task_names()
+            if len(task_names) != gamma_cpu.shape[0]:
+                logger.warning(
+                    "Task-name count does not match L-TAFM gamma rows "
+                    f"({len(task_names)} vs {gamma_cpu.shape[0]}). Falling back to task ids."
+                )
+                task_names = [f"task_{idx}" for idx in range(gamma_cpu.shape[0])]
+            rows = []
+            for task_id, task_name in enumerate(task_names):
+                gamma_t = gamma_cpu[task_id]
+                beta_t = beta_cpu[task_id]
+                rows.append({
+                    "episode": int(epoch),
+                    "task_id": int(task_id),
+                    "task_name": task_name,
+                    "pathway": "NR" if str(task_name).startswith("NR-") else "SR",
+                    "gamma_l2": float(torch.norm(gamma_t - 1.0, p=2).item()),
+                    "gamma_abs_mean": float(torch.mean(torch.abs(gamma_t - 1.0)).item()),
+                    "gamma_mean": float(torch.mean(gamma_t).item()),
+                    "gamma_std": float(torch.std(gamma_t, unbiased=False).item()),
+                    "gamma_var": float(torch.var(gamma_t, unbiased=False).item()),
+                    "gamma_min": float(torch.min(gamma_t).item()),
+                    "gamma_max": float(torch.max(gamma_t).item()),
+                    "beta_l2": float(torch.norm(beta_t, p=2).item()),
+                    "beta_abs_mean": float(torch.mean(torch.abs(beta_t)).item()),
+                    "beta_mean": float(torch.mean(beta_t).item()),
+                    "beta_std": float(torch.std(beta_t, unbiased=False).item()),
+                    "score": "" if score is None else float(score),
+                    "is_best": bool(is_best),
+                })
+
+            snapshot = {
+                "episode": int(epoch),
+                "score": None if score is None else float(score),
+                "is_best": bool(is_best),
+                "task_names": task_names,
+                "semantic_embedding_path": getattr(self.args, "semantic_embedding_path", ""),
+                "gamma": gamma_cpu,
+                "beta": beta_cpu,
+                "stats": rows,
+            }
+
+        if was_training:
+            model.train()
+
+        snapshot_path = os.path.join(out_dir, f"gamma_beta_epoch_{int(epoch):04d}.pt")
+        latest_path = os.path.join(out_dir, "gamma_beta_latest.pt")
+        torch.save(snapshot, snapshot_path)
+        torch.save(snapshot, latest_path)
+        if is_best:
+            torch.save(snapshot, os.path.join(out_dir, "gamma_beta_best.pt"))
+
+        trajectory_path = os.path.join(out_dir, "gamma_trajectory.csv")
+        fieldnames = list(rows[0].keys()) if rows else []
+        write_header = not os.path.exists(trajectory_path)
+        with open(trajectory_path, "a", newline="") as fout:
+            writer = csv.DictWriter(fout, fieldnames=fieldnames)
+            if write_header:
+                writer.writeheader()
+            writer.writerows(rows)
+
+        return {
+            "snapshot_path": snapshot_path,
+            "latest_path": latest_path,
+            "trajectory_path": trajectory_path,
+            "best_path": os.path.join(out_dir, "gamma_beta_best.pt") if is_best else None,
+        }
+
     @staticmethod
     def _scheduled_weight(epoch, warm, ramp, hold, decay, max_w):
         max_w = float(max_w)
@@ -172,33 +299,39 @@ class MetaLearner:
         result = model(
             s_data, q_data, s_y, q_y, sampled_task, know_w=know_w, know_temp=self.args.know_temp,
         )
-        s_logit, q_logit, s_label, q_label, graph_f, s_feat, q_feat = result
+        s_logit, q_logit, s_label, q_label, graph_f, s_feat, q_feat, diversity_loss = result
         
         eval_loss = self.cls_criterion(q_logit, q_label)
         
-        return eval_loss, graph_f
+        return eval_loss, graph_f, diversity_loss
 
     def train_step(self, epoch):
         selected_ids, selected_tasks, selected_prob = self.sample_tasks(epoch)
         eval_losses = []
+        diversity_losses = []
         graph_f1s, graph_f2s = [], []
         
         for task_id, (s_data1, q_data1, s_data2, q_data2) in zip(selected_ids, selected_tasks):
             auxi_tasks = self.sample_auxiliary(task_id, self.train_task_range, self.train_auxi_task_num, epoch=epoch)
-            eval_loss1, graph_f1 = self.update_inner(s_data1, q_data1, task_id, auxi_tasks, epoch)
-            eval_loss2, graph_f2 = self.update_inner(s_data2, q_data2, task_id, auxi_tasks, epoch)
+            eval_loss1, graph_f1, div_loss1 = self.update_inner(s_data1, q_data1, task_id, auxi_tasks, epoch)
+            eval_loss2, graph_f2, div_loss2 = self.update_inner(s_data2, q_data2, task_id, auxi_tasks, epoch)
             eval_losses += [eval_loss1, eval_loss2]
             graph_f1s.append(graph_f1)
             graph_f2s.append(graph_f2)
+            if div_loss1 is not None:
+                diversity_losses.append(div_loss1)
+            if div_loss2 is not None:
+                diversity_losses.append(div_loss2)
 
         # tgt_f
         tgt_f1, tgt_f2 = torch.vstack(graph_f1s), torch.vstack(graph_f2s)
         loss_contr = self.nce_loss(tgt_f1, tgt_f2)
 
         loss_cls = torch.stack(eval_losses).mean()
+        loss_div = torch.stack(diversity_losses).mean() if diversity_losses else loss_cls.new_zeros(())
         self.opt.zero_grad()
-        loss = loss_cls + loss_contr * self.args.contr_w
-        loss.backward()
+        total_loss = loss_cls + loss_contr * self.args.contr_w + loss_div
+        total_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.maml.parameters(), 1)
         self.opt.step()
 
@@ -233,7 +366,12 @@ class MetaLearner:
         torch.nn.utils.clip_grad_norm_(self.task_selector.parameters(), 1)
         self.task_opt.step()
 
-        return loss_cls.item()
+        return {
+            'loss_cls': loss_cls.item(),
+            'loss_contr': loss_contr.item(),
+            'loss_div': loss_div.item(),
+            'loss_total': total_loss.item(),
+        }
 
     def test_step(self, test_auxi_task_num=None):
         auc_scores = []
@@ -279,7 +417,7 @@ class MetaLearner:
                         s_data, iter_q_data, s_y, iter_q_y, sampled_task,
                         know_w=float(self.args.know_weight), know_temp=self.args.know_temp,
                     )
-                    _, q_logit, _, q_label, _, s_feat, q_feat = result
+                    _, q_logit, _, q_label, _, s_feat, q_feat, _ = result
                     q_logit = torch.sigmoid(q_logit).cpu().view(-1)
                     q_label = q_label.cpu().view(-1)
                     y_pred.append(q_logit)

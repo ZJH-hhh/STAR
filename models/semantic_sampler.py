@@ -31,6 +31,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from semantic_utils import normalize_semantic_encoder, validate_semantic_embedding_metadata
+
 
 class SemanticGuidedSampler(nn.Module):
     """
@@ -47,6 +49,7 @@ class SemanticGuidedSampler(nn.Module):
         use_softmax: bool = True,
         min_similarity: float = -1.0,
         property_names: Optional[List[str]] = None,
+        expected_encoder: Optional[str] = None,
     ):
         """
         Args:
@@ -63,6 +66,7 @@ class SemanticGuidedSampler(nn.Module):
         self.similarity_weight = similarity_weight
         self.use_softmax = use_softmax
         self.min_similarity = min_similarity
+        self.expected_encoder = expected_encoder
         
         # 加载预计算嵌入
         self._load_embeddings(embedding_path, property_names)
@@ -73,6 +77,12 @@ class SemanticGuidedSampler(nn.Module):
             raise FileNotFoundError(f"Embedding file not found: {embedding_path}")
         
         data = torch.load(embedding_path, map_location='cpu')
+        loaded_encoder = validate_semantic_embedding_metadata(
+            data=data,
+            expected_encoder=self.expected_encoder,
+            embedding_path=embedding_path,
+            consumer="SemanticSampler",
+        )
         
         # 获取嵌入矩阵和属性名
         self.embedding_matrix = data['embedding_matrix']  # [num_properties, embedding_dim]
@@ -94,6 +104,8 @@ class SemanticGuidedSampler(nn.Module):
         
         print(f"[SemanticSampler] Loaded {self.num_properties} property embeddings")
         print(f"[SemanticSampler] Embedding dim: {self.embedding_dim}")
+        if loaded_encoder is not None:
+            print(f"[SemanticSampler] Embedding encoder: {loaded_encoder}")
         
         # 如果提供了外部属性名列表，建立映射
         if property_names is not None:
@@ -326,6 +338,7 @@ class SemanticSamplerConfig:
         self,
         enabled: bool = True,
         embedding_path: str = "data/embeddings/sider_property_embeddings.pt",
+        encoder: str = "tfidf",
         temperature: float = 0.1,
         similarity_weight: float = 0.5,
         min_similarity: float = -1.0,
@@ -335,6 +348,7 @@ class SemanticSamplerConfig:
     ):
         self.enabled = enabled
         self.embedding_path = embedding_path
+        self.encoder = normalize_semantic_encoder(encoder)
         self.temperature = temperature
         self.similarity_weight = similarity_weight
         self.min_similarity = min_similarity
@@ -349,6 +363,7 @@ class SemanticSamplerConfig:
             enabled=getattr(args, 'use_semantic_sampler', False),
             embedding_path=getattr(args, 'semantic_embedding_path', 
                                    f"data/embeddings/{args.dataset}_property_embeddings.pt"),
+            encoder=getattr(args, 'semantic_encoder', 'tfidf'),
             temperature=getattr(args, 'semantic_temperature', 0.1),
             similarity_weight=getattr(args, 'semantic_similarity_weight', 0.5),
             min_similarity=getattr(args, 'semantic_min_similarity', -1.0),
@@ -387,6 +402,7 @@ def create_semantic_sampler(args) -> Optional[SemanticGuidedSampler]:
             similarity_weight=config.similarity_weight,
             use_softmax=config.use_softmax,
             min_similarity=config.min_similarity,
+            expected_encoder=config.encoder,
         )
         return sampler
     except FileNotFoundError as e:
@@ -434,4 +450,3 @@ if __name__ == "__main__":
     print(f"Adjusted logits: {adjusted[:5]}")
     
     print("\n✅ All tests passed!")
-

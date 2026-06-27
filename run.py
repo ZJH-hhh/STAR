@@ -18,7 +18,7 @@ import matplotlib.ticker as ticker
 
 from meta_learner import MetaLearner
 from args_parser import args_parser
-from explight import initialize_exp, set_seed, get_dump_path, describe_model, save_model
+from explight import initialize_exp, set_seed, get_dump_path, describe_model
 import logging
 from tqdm import tqdm
 import time
@@ -42,12 +42,15 @@ class Runner:
 
         for epoch in pbar:
             start = time.time()
-            loss_cls = self.meta_learner.train_step(epoch)
+            loss_stats = self.meta_learner.train_step(epoch)
             cost_time = time.time() - start
             cost_time_ls.append(cost_time)
-            self.writer.add_scalar('loss-cls', loss_cls, epoch)
+            self.writer.add_scalar('loss-cls', loss_stats['loss_cls'], epoch)
+            self.writer.add_scalar('loss-contr', loss_stats['loss_contr'], epoch)
+            self.writer.add_scalar('loss-div', loss_stats['loss_div'], epoch)
+            self.writer.add_scalar('loss-total', loss_stats['loss_total'], epoch)
 
-            pbar.set_description(f"loss={loss_cls:.4f}")
+            pbar.set_description(f"loss={loss_stats['loss_total']:.4f}")
             
             # 每 50 步清理一次显存碎片，防止 OOM
             if epoch % 50 == 0:
@@ -55,8 +58,21 @@ class Runner:
             
             if epoch % self.args.eval_step == 0:
                 score = self.meta_learner.test_step()
-                if score > best_score:
+                is_best = score > best_score
+                if is_best:
                     best_score = score
+                    checkpoint_path = self.meta_learner.save_checkpoint(
+                        self.logger_path, epoch=epoch, score=score, is_best=True,
+                    )
+                    logger.info(f"saved best checkpoint: {checkpoint_path}")
+                ltafm_paths = self.meta_learner.export_ltafm_modulation(
+                    self.logger_path, epoch=epoch, score=score, is_best=is_best,
+                )
+                if ltafm_paths is not None:
+                    logger.info(
+                        "saved L-TAFM modulation snapshot: "
+                        f"{ltafm_paths['snapshot_path']}"
+                    )
                 logger.info(f"{epoch} | score: {score:.5f}, best_score: {best_score:.5f}")
                 self.writer.add_scalars('score', {'score': score, 'best': best_score}, epoch)
         logger.info(f"best score: {best_score:.5f}")
