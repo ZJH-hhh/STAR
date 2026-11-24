@@ -53,37 +53,6 @@ python scripts/precompute_property_embeddings.py --dataset all --encoder tfidf
 
 ## Run
 
-Full STAR is the default:
-
 ```bash
 python run.py --dataset tox21 --n_support 10 --gpu 0
 ```
-
-For 1-shot:
-
-```bash
-python run.py --dataset tox21 --n_support 1 --gpu 0
-```
-
-To run the baseline without STAR modules:
-
-```bash
-python run.py --dataset tox21 --n_support 10 --gpu 0 \
-  --relation_backend baseline \
-  --use_knowledge_edges none \
-  --use_semantic_sampler 0 \
-  --use_ltafm 0
-```
-
-## Files
-
-```text
-run.py                                  main entry
-args_parser.py                          default arguments
-models/                                 model modules
-dataset/                                dataset loading
-scripts/precompute_property_embeddings.py text embedding generation
-pretrained/supervised_contextpred.pth   optional pretrained GNN
-latex/                                  manuscript files
-```
-
