@@ -121,8 +121,7 @@ def get_dump_path(params):
     # create the sweep path if it does not exist
     when = date.today().strftime('%m%d-')
     sweep_path = os.path.join(dump_path, when + params.exp_name)
-    if not os.path.exists(sweep_path):
-        subprocess.Popen("mkdir -p %s" % sweep_path, shell=True).wait()
+    os.makedirs(sweep_path, exist_ok=True)
 
     # create an random ID for the job if it is not given in the parameters.
     if params.exp_id == '':
@@ -137,8 +136,7 @@ def get_dump_path(params):
 
     # create the dump folder / update parameters
     exp_folder = os.path.join(sweep_path, params.exp_id)
-    if not os.path.isdir(exp_folder):
-        subprocess.Popen("mkdir -p %s" % exp_folder, shell=True).wait()
+    os.makedirs(exp_folder, exist_ok=True)
     return exp_folder
 
 

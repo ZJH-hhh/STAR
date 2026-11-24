@@ -64,6 +64,15 @@ class FiLMLayer(nn.Module):
         nn.init.constant_(self.mlp[-1].bias[:feature_dim], gamma_init)  # γ 部分
         nn.init.zeros_(self.mlp[-1].bias[feature_dim:])  # β 部分
         
+    def modulation(self, semantic_emb, deterministic=False):
+        hidden = semantic_emb
+        for layer in self.mlp:
+            if deterministic and isinstance(layer, nn.Dropout):
+                continue
+            hidden = layer(hidden)
+        raw_gamma, beta = hidden.chunk(2, dim=-1)
+        return F.softplus(raw_gamma) + 1e-8, beta
+
     def forward(
         self,
         features: torch.Tensor,
@@ -84,11 +93,7 @@ class FiLMLayer(nn.Module):
             semantic_emb = semantic_emb.unsqueeze(0)  # [1, semantic_dim]
         
         # 生成调制参数
-        modulation = self.mlp(semantic_emb)  # [batch_size, 2 * feature_dim]
-        gamma, beta = torch.chunk(modulation, 2, dim=-1)  # 各 [batch_size, feature_dim]
-        
-        # 应用 Softplus 确保 γ > 0 (避免负缩放)
-        gamma = F.softplus(gamma) + 1e-8
+        gamma, beta = self.modulation(semantic_emb)
         
         # 扩展维度以匹配 features
         if features.dim() == 3:  # [batch_size, n_mols, feature_dim]
@@ -99,6 +104,17 @@ class FiLMLayer(nn.Module):
         modulated_features = gamma * features + beta
         
         return modulated_features, gamma.squeeze(1) if gamma.dim() == 3 else gamma, beta.squeeze(1) if beta.dim() == 3 else beta
+
+
+class AssayIDEmbedding(nn.Embedding):
+    """Learned conditioning vectors; held-out rows start from independent draws."""
+
+    def reset_held_out(self, task_id, seed):
+        generator = torch.Generator()
+        generator.manual_seed(seed * self.num_embeddings + int(task_id))
+        initial = torch.randn(self.embedding_dim, generator=generator, dtype=self.weight.dtype)
+        with torch.no_grad():
+            self.weight[task_id].copy_(initial)
 
 
 class TaskAdaptiveModulator(nn.Module):
@@ -153,16 +169,16 @@ class TaskAdaptiveModulator(nn.Module):
             modulated_features: 调制后特征
             diversity_loss: 多样性正则化损失 (如果 compute_diversity_loss=True)
         """
-        modulated_features, gamma, beta = self.film(features, semantic_emb)
-        
-        diversity_loss = None
-        if compute_diversity_loss and self.diversity_weight > 0:
-            # 计算 γ 的方差，鼓励不同维度的分化
-            # L_div = -Var(γ)，使用负方差作为损失（方差越大越好）
-            gamma_var = torch.var(gamma, dim=-1).mean()  # [batch_size] -> scalar
-            diversity_loss = -self.diversity_weight * gamma_var
-        
+        modulated_features, _, _ = self.film(features, semantic_emb)
+        diversity_loss = self.assay_diversity(semantic_emb) if compute_diversity_loss else None
         return modulated_features, diversity_loss
+
+    def assay_diversity(self, assay_vectors):
+        """Each row is one distinct selected assay, independent of its two episode views."""
+        if assay_vectors.dim() == 1:
+            assay_vectors = assay_vectors.unsqueeze(0)
+        gamma, _ = self.film.modulation(assay_vectors, deterministic=True)
+        return -self.diversity_weight * gamma.var(dim=0, unbiased=False).mean()
     
     def get_modulation_stats(self, semantic_emb: torch.Tensor) -> dict:
         """

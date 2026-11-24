@@ -4,7 +4,7 @@ import torch
 nan_type_dict = {'0': 1, '1': 2, 'nan': 3}
 
 
-def get_edge(label_matrix, label, shift, bi_direct=True):
+def get_edge(label_matrix, label, shift, bi_direct=True, task_offset=0):
     if label is None:
         # Each row in the result contains the indices of a non-zero element in input.
         # sample -> task
@@ -12,6 +12,7 @@ def get_edge(label_matrix, label, shift, bi_direct=True):
     else:
         edge = torch.nonzero(label_matrix == label, as_tuple=False)
     edge[:, 0] = edge[:, 0] + shift
+    edge[:, 1] += task_offset
     if bi_direct:
         edge_copy = deepcopy(edge)
         edge_copy[:, 0], edge_copy[:, 1] = edge[:, 1], edge[:, 0]
@@ -49,8 +50,8 @@ class InductiveGraphConnector:
             auxi_query_y_i = y_i[[-1], 1:]  # [1, y-1]
             support_edge_i_0 = get_edge(support_y_i, 0, n_task)
             support_edge_i_1 = get_edge(support_y_i, 1, n_task)
-            query_edge_i_0 = get_edge(auxi_query_y_i, 0, n_task + n_s)
-            query_edge_i_1 = get_edge(auxi_query_y_i, 1, n_task + n_s)
+            query_edge_i_0 = get_edge(auxi_query_y_i, 0, n_task + n_s, task_offset=1)
+            query_edge_i_1 = get_edge(auxi_query_y_i, 1, n_task + n_s, task_offset=1)
             if nan_w == 0:
                 edge_i = torch.cat([support_edge_i_0, query_edge_i_0,
                                     support_edge_i_1, query_edge_i_1])
@@ -60,7 +61,7 @@ class InductiveGraphConnector:
                 edge_w_i = torch.tensor([1.] * len(edge_type_i)).to(edge_i.device)
             else:
                 support_edge_i_nan = get_edge(support_y_i, None, n_task)
-                query_edge_i_nan = get_edge(auxi_query_y_i, None, n_task + n_s)
+                query_edge_i_nan = get_edge(auxi_query_y_i, None, n_task + n_s, task_offset=1)
                 edge_i = torch.cat([support_edge_i_0, query_edge_i_0,
                                     support_edge_i_1, query_edge_i_1,
                                     support_edge_i_nan, query_edge_i_nan])

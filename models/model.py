@@ -1,6 +1,7 @@
 from copy import deepcopy
 
 import numpy as np
+from semantic_utils import load_task_embeddings
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -8,12 +9,12 @@ import torch.nn.functional as F
 from semantic_utils import validate_semantic_embedding_metadata
 from .base_encoder import GNN_Encoder
 from .krgts_relation import KRGTSRelation
-from .ltafm import TaskAdaptiveModulator
+from .ltafm import AssayIDEmbedding, TaskAdaptiveModulator
 from .relation import TaskRelationNet
 
 
 class GSMeta(nn.Module):
-    def __init__(self, task_num, train_task_num, args):
+    def __init__(self, task_num, train_task_num, args, test_task_ids=None):
         super(GSMeta, self).__init__()
         self.mol_encoder = GNN_Encoder(
             num_layer=args.mol_num_layer,
@@ -28,6 +29,10 @@ class GSMeta(nn.Module):
 
         # L-TAFM: Task-Adaptive Feature Modulation
         self.use_ltafm = getattr(args, "use_ltafm", False)
+        self.conditioning = getattr(args, "conditioning", "text")
+        self.id_seed = args.random_seed
+        if self.conditioning == "support_adapted_id" and not self.use_ltafm:
+            raise ValueError("Support-adapted ID conditioning requires L-TAFM")
         if self.use_ltafm:
             import os
 
@@ -37,8 +42,13 @@ class GSMeta(nn.Module):
             dropout = getattr(args, "mol_dropout", 0.1)
 
             semantic_path = getattr(args, "semantic_embedding_path", "")
-            if semantic_path and os.path.exists(semantic_path):
-                emb_data = torch.load(semantic_path, map_location="cpu")
+            if self.conditioning == "support_adapted_id":
+                semantic_dim = args.id_dim
+                if not isinstance(semantic_dim, int) or semantic_dim < 1:
+                    raise ValueError("Use the matching Full embedding width for id_dim")
+                self.task_ids = AssayIDEmbedding(task_num, semantic_dim)
+            elif semantic_path and os.path.exists(semantic_path):
+                emb_data = load_task_embeddings(semantic_path)
                 loaded_encoder = validate_semantic_embedding_metadata(
                     data=emb_data,
                     expected_encoder=getattr(args, "semantic_encoder", None),
@@ -46,13 +56,15 @@ class GSMeta(nn.Module):
                     consumer="L-TAFM",
                 )
                 embedding_matrix = emb_data["embedding_matrix"]
+                if embedding_matrix.shape[0] != task_num:
+                    raise ValueError("Assay embedding count differs from dataset task count")
                 self.register_buffer("semantic_embeddings", embedding_matrix)
                 semantic_dim = embedding_matrix.shape[1]
                 if loaded_encoder is not None:
                     print(f"[L-TAFM] Embedding encoder: {loaded_encoder}")
             else:
-                semantic_dim = getattr(args, "ltafm_semantic_dim", 768)
-                self.register_buffer("semantic_embeddings", torch.randn(task_num, semantic_dim))
+                raise FileNotFoundError(f"Missing assay embeddings: {semantic_path}")
+
 
             self.ltafm = TaskAdaptiveModulator(
                 feature_dim=args.emb_dim,
@@ -71,6 +83,7 @@ class GSMeta(nn.Module):
                 in_dim=args.emb_dim,
                 total_tasks=task_num,
                 train_tasks=train_task_num,
+                test_task_ids=test_task_ids,
                 args=args,
             )
         else:
@@ -81,6 +94,7 @@ class GSMeta(nn.Module):
                 edge_hidden_dim=args.rel_edge_hidden_dim,
                 total_tasks=task_num,
                 train_tasks=train_task_num,
+                test_task_ids=test_task_ids,
                 batch_norm=args.rel_batch_norm,
                 top_k=args.rel_top_k,
                 dropout=args.rel_dropout,
@@ -89,6 +103,16 @@ class GSMeta(nn.Module):
                 nan_type=args.rel_nan_type,
                 edge_type=args.rel_edge_type,
             )
+
+    def conditioning_vectors(self, task_ids):
+        if self.conditioning == "support_adapted_id":
+            return self.task_ids(task_ids)
+        return self.semantic_embeddings[task_ids]
+
+    def initialize_held_out_id(self, task_id):
+        """Start every repeat for this assay from the same independent, label-free draw."""
+        if self.conditioning == "support_adapted_id":
+            self.task_ids.reset_held_out(task_id, self.id_seed)
 
     def encode_mol(self, data):
         return self.mol_encoder(data.x, data.edge_index, data.edge_attr, data.batch)
@@ -108,20 +132,11 @@ class GSMeta(nn.Module):
         diversity_loss = None
         if self.use_ltafm and self.ltafm is not None:
             target_task_id = sampled_task[0] if sampled_task.dim() > 0 else sampled_task
-            task_semantic = self.semantic_embeddings[target_task_id]
-
-            s_feat_modulated, s_div_loss = self.ltafm(
-                s_feat, task_semantic, compute_diversity_loss=True
-            )
-            q_feat_modulated, q_div_loss = self.ltafm(
-                q_feat, task_semantic, compute_diversity_loss=True
-            )
-
-            if s_div_loss is not None and q_div_loss is not None:
-                diversity_loss = (s_div_loss + q_div_loss) / 2
-
-            s_feat = s_feat_modulated
-            q_feat = q_feat_modulated
+            task_semantic = self.conditioning_vectors(target_task_id)
+            # The same assay-specific FiLM parameters apply to support and query molecules.
+            combined, _ = self.ltafm(torch.cat([s_feat, q_feat]), task_semantic,
+                                     compute_diversity_loss=False)
+            s_feat, q_feat = combined.split([s_feat.size(0), q_feat.size(0)])
 
         s_feat_input = s_feat.repeat(q_feat.shape[0], 1, 1)
         q_feat_input = q_feat.unsqueeze(1)

@@ -128,7 +128,7 @@ class TaskRelationNet(nn.Module):
                  dropout=0.,
                  pre_dropout=0.,
                  nan_w=0.,
-                 nan_type='nan'):
+                 nan_type='nan', test_task_ids=None):
         super(TaskRelationNet, self).__init__()
         self.dropout = dropout
         self.total_tasks = total_tasks
@@ -140,7 +140,9 @@ class TaskRelationNet(nn.Module):
         else:
             self.pre_dropout = None
         self.task_emb = nn.Embedding(total_tasks, in_dim)
-        self.task_emb.weight.data[train_tasks:, :] = 0
+        held_out = slice(train_tasks, None) if test_task_ids is None else test_task_ids
+        with torch.no_grad():
+            self.task_emb.weight[held_out, :] = 0
         for i in range(num_layer):
             module_edge = EdgeUpdateNetwork(in_dim=in_dim, hidden_dim=edge_hidden_dim, n_layer=edge_n_layer,
                                             top_k=top_k, batch_norm=batch_norm, dropout=dropout)

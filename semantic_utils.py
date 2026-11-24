@@ -64,3 +64,23 @@ def validate_semantic_embedding_metadata(
             )
 
     return normalized_actual
+
+def load_task_embeddings(path):
+    """Read native S28 resources in dataset-local task order."""
+    import numpy as np
+    import torch
+    if str(path).lower().endswith(".npz"):
+        with np.load(path, allow_pickle=False) as archive:
+            ids = archive["task_ids"]
+            if not np.array_equal(ids, np.arange(len(ids))):
+                raise ValueError("Embedding rows must follow dataset-local task IDs")
+            matrix = torch.as_tensor(archive["embedding_matrix"], dtype=torch.float32)
+            names = archive["task_names"].tolist()
+            if matrix.ndim != 2 or matrix.shape[0] != len(ids) or len(names) != len(ids):
+                raise ValueError("Inconsistent embedding dimensions")
+            return {"embedding_matrix": matrix, "property_names": names,
+                    "metadata": {"encoder": "tfidf"}}
+    data = torch.load(path, map_location="cpu")
+    if isinstance(data, torch.Tensor):
+        return {"embedding_matrix": data}
+    return data

@@ -1,6 +1,11 @@
 import csv
+import json
+from evaluation import read_episodes, episode_metrics, summarize, manifest_hash
+from revision_outputs import prediction_writer, write_predictions, write_run_metadata_and_screening
+from explight import set_seed
 import os
 
+from semantic_utils import load_task_embeddings
 import torch
 from torch import nn
 import torch.optim as optim
@@ -15,7 +20,6 @@ from models.semantic_sampler import SemanticGuidedSampler, create_semantic_sampl
 from dataset import FewshotMolDataset, dataset_sampler
 from models.knowledge_edges import compute_knowledge_adj
 
-from sklearn.metrics import roc_auc_score
 
 import logging
 import random
@@ -42,14 +46,14 @@ class MetaLearner:
     def __init__(self, args):
         self.args = args
         self.device = torch.device('cuda' if int(args.gpu) >= 0 else 'cpu')
-        need_knowledge = (args.use_knowledge_edges != 'none') or (args.relation_backend == 'krgts')
+        need_knowledge = args.use_knowledge_edges != 'none'
         self.dataset = FewshotMolDataset(root=args.data_root, name=args.dataset,
-                                         compute_knowledge=need_knowledge)
+                                         compute_knowledge=need_knowledge, fingerprint_mode=args.fingerprint_mode)
         self.train_task_range, self.test_task_range = self.dataset.train_task_range, self.dataset.test_task_range
         self.task_sampling = getattr(args, 'task_sampling', 'random')
         model = GSMeta(task_num=self.dataset.total_tasks,
                         train_task_num=self.dataset.n_task_train,
-                        args=args).to(self.device)
+                        args=args, test_task_ids=self.test_task_range).to(self.device)
         self.maml = MAML(model, lr=args.inner_lr, first_order=not args.second_order, anil=False, allow_unused=True)
         # 预训练
         # self.maml = MAML(model, lr=args.inner_lr, first_order=not args.second_order, anil=False, allow_unused=True, allow_nograd=True)
@@ -62,10 +66,15 @@ class MetaLearner:
         self.n_support, self.n_query = args.n_support, args.n_query
         self.inner_update_step = args.inner_update_step
 
-        if self.args.train_auxi_task_num is None:
-            self.train_auxi_task_num = len(self.train_task_range) - 1
-        else:
-            self.train_auxi_task_num = min(args.train_auxi_task_num, len(self.train_task_range) - 1)
+        candidates = len(self.train_task_range) - 1
+        self.train_auxi_task_num = args.train_auxi_task_num
+        if self.train_auxi_task_num is None and not args.eval_checkpoint:
+            self.train_auxi_task_num = candidates
+        if self.train_auxi_task_num is not None:
+            if not 0 <= self.train_auxi_task_num <= candidates:
+                raise ValueError(f"train_auxi_task_num must be between 0 and {candidates}")
+            logger.info("Training auxiliary assays per episode: %d of %d",
+                        self.train_auxi_task_num, candidates)
         if self.args.test_auxi_task_num is None:
             self.test_auxi_task_num = len(self.train_task_range)
         else:
@@ -83,7 +92,8 @@ class MetaLearner:
         self.args.pool_num = min(self.args.pool_num, len(self.train_task_range))
         
         # Semantic-Guided Task Sampling
-        self.use_semantic_sampler = bool(getattr(args, 'use_semantic_sampler', False))
+        self.use_semantic_sampler = (bool(getattr(args, 'use_semantic_sampler', False))
+                                     and model.conditioning == "text")
         self.semantic_warmup = int(getattr(args, 'semantic_warmup', 0))
         self.semantic_reward_bonus = float(getattr(args, 'semantic_reward_bonus', 0.1))
         
@@ -94,8 +104,7 @@ class MetaLearner:
                 self.property_names = self.dataset.task_names if hasattr(self.dataset, 'task_names') else None
                 logger.info(f"SemanticGuidedSampler enabled with weight={args.semantic_similarity_weight}")
             else:
-                self.use_semantic_sampler = False
-                logger.warning("SemanticGuidedSampler disabled: embedding file not found")
+                raise FileNotFoundError(args.semantic_embedding_path)
         else:
             self.semantic_sampler = None
         
@@ -105,7 +114,7 @@ class MetaLearner:
         os.makedirs(save_dir, exist_ok=True)
         checkpoint = {
             "epoch": int(epoch),
-            "score": float(score),
+            "score": None if score is None else float(score),
             "is_best": bool(is_best),
             "model_state_dict": self.maml.module.state_dict(),
             "task_selector_state_dict": self.task_selector.state_dict(),
@@ -114,6 +123,8 @@ class MetaLearner:
             "args": vars(self.args),
             "train_task_range": list(self.train_task_range),
             "test_task_range": list(self.test_task_range),
+            "effective_train_auxi_task_num": self.train_auxi_task_num,
+            "effective_test_auxi_task_num": self.test_auxi_task_num,
         }
         path = os.path.join(save_dir, "best_model.pt" if is_best else "checkpoint.pt")
         torch.save(checkpoint, path)
@@ -123,7 +134,7 @@ class MetaLearner:
         path = getattr(self.args, "semantic_embedding_path", "")
         if path and os.path.exists(path):
             try:
-                emb_data = torch.load(path, map_location="cpu")
+                emb_data = load_task_embeddings(path)
                 names = emb_data.get("sorted_names", emb_data.get("property_names"))
                 if names and len(names) == self.dataset.total_tasks:
                     return list(names)
@@ -141,7 +152,7 @@ class MetaLearner:
 
     def export_ltafm_modulation(self, save_dir, epoch, score=None, is_best=False):
         model = self.maml.module
-        if not getattr(model, "use_ltafm", False) or model.ltafm is None:
+        if not model.use_ltafm or model.conditioning != "text":
             return None
 
         out_dir = os.path.join(save_dir, "ltafm_mechanistic")
@@ -252,8 +263,6 @@ class MetaLearner:
         )
 
     def _knowledge_mode(self):
-        if self.args.relation_backend == 'krgts' and self.args.use_knowledge_edges == 'none':
-            return 'both'
         return self.args.use_knowledge_edges
 
     def _build_knowledge(self, s_list, q_list):
@@ -299,36 +308,35 @@ class MetaLearner:
         result = model(
             s_data, q_data, s_y, q_y, sampled_task, know_w=know_w, know_temp=self.args.know_temp,
         )
-        s_logit, q_logit, s_label, q_label, graph_f, s_feat, q_feat, diversity_loss = result
+        _, q_logit, _, q_label, graph_f = result[:5]
         
         eval_loss = self.cls_criterion(q_logit, q_label)
         
-        return eval_loss, graph_f, diversity_loss
+        return eval_loss, graph_f
 
     def train_step(self, epoch):
         selected_ids, selected_tasks, selected_prob = self.sample_tasks(epoch)
         eval_losses = []
-        diversity_losses = []
         graph_f1s, graph_f2s = [], []
         
         for task_id, (s_data1, q_data1, s_data2, q_data2) in zip(selected_ids, selected_tasks):
             auxi_tasks = self.sample_auxiliary(task_id, self.train_task_range, self.train_auxi_task_num, epoch=epoch)
-            eval_loss1, graph_f1, div_loss1 = self.update_inner(s_data1, q_data1, task_id, auxi_tasks, epoch)
-            eval_loss2, graph_f2, div_loss2 = self.update_inner(s_data2, q_data2, task_id, auxi_tasks, epoch)
+            eval_loss1, graph_f1 = self.update_inner(s_data1, q_data1, task_id, auxi_tasks, epoch)
+            eval_loss2, graph_f2 = self.update_inner(s_data2, q_data2, task_id, auxi_tasks, epoch)
             eval_losses += [eval_loss1, eval_loss2]
             graph_f1s.append(graph_f1)
             graph_f2s.append(graph_f2)
-            if div_loss1 is not None:
-                diversity_losses.append(div_loss1)
-            if div_loss2 is not None:
-                diversity_losses.append(div_loss2)
 
         # tgt_f
         tgt_f1, tgt_f2 = torch.vstack(graph_f1s), torch.vstack(graph_f2s)
         loss_contr = self.nce_loss(tgt_f1, tgt_f2)
 
         loss_cls = torch.stack(eval_losses).mean()
-        loss_div = torch.stack(diversity_losses).mean() if diversity_losses else loss_cls.new_zeros(())
+        model = self.maml.module
+        loss_div = loss_cls.new_zeros(())
+        if model.ltafm is not None and model.ltafm.diversity_weight:
+            ids = torch.as_tensor(selected_ids, dtype=torch.long, device=self.device)
+            loss_div = model.ltafm.assay_diversity(model.conditioning_vectors(ids))
         self.opt.zero_grad()
         total_loss = loss_cls + loss_contr * self.args.contr_w + loss_div
         total_loss.backward()
@@ -373,61 +381,105 @@ class MetaLearner:
             'loss_total': total_loss.item(),
         }
 
-    def test_step(self, test_auxi_task_num=None):
-        auc_scores = []
-        
-        for task_i in tqdm(self.test_task_range, desc='eval'):
-            s_data, q_data = dataset_sampler(self.dataset, self.n_support, self.n_query,
-                                             tgt_id=task_i, inductive=True,
-                                             sampling=self.task_sampling)
-            s_list = s_data
-            s_data = Batch.from_data_list(s_list).to(self.device)
-            test_auxi_task_num = self.test_auxi_task_num if test_auxi_task_num is None else test_auxi_task_num
-            auxi_tasks = self.sample_auxiliary(task_i, self.train_task_range, test_auxi_task_num)
-            sampled_task = torch.tensor([task_i] + auxi_tasks).to(self.device)
-            s_y = s_data.y[:, sampled_task]
-            model = self.maml.clone()
-            model.train()
-            # inner update
-            adapt_q_iter = iter(DataLoader(q_data, batch_size=self.args.n_query, shuffle=True))
-            for _ in range(self.args.inner_update_step):
+    def _eval_labels(self, batch, sampled_task):
+        # Targets are retained separately by the scorer. -1 has no edge type.
+        batch.y[:, sampled_task[0]] = float("nan")
+        if self.args.mask_query_aux:
+            batch.y.fill_(-1)
+        return batch.y[:, sampled_task]
+
+    def prepare_eval_episode(self, episode):
+        task_i = episode["task_id"]
+        set_seed(episode["support_seed"] & 0x7fffffff)
+        s_list = self.dataset[episode["support_indices"]]
+        q_data = self.dataset[episode["query_indices"]]
+        s_data = Batch.from_data_list(s_list).to(self.device)
+        auxi_tasks = self.sample_auxiliary(task_i, self.train_task_range, self.test_auxi_task_num)
+        sampled_task = torch.tensor([task_i] + auxi_tasks).to(self.device)
+        s_y = s_data.y[:, sampled_task]
+        model = deepcopy(self.maml)
+        model.module.initialize_held_out_id(task_i)
+        model.train()
+        # inner update
+        adapt_loader = DataLoader(q_data, batch_size=min(len(q_data), self.args.n_query),
+                                  shuffle=True, drop_last=True)
+        adapt_q_iter = iter(adapt_loader)
+        for _ in range(self.args.inner_update_step):
+            try:
                 adapt_q_data = next(adapt_q_iter)
-                know = self._build_knowledge(s_list, adapt_q_data.to_data_list())
-                self._attach_knowledge(adapt_q_data, know)
-                adapt_q_data = adapt_q_data.to(self.device)
-                adapt_q_y = adapt_q_data.y[:, sampled_task]
-                result = model(
-                    s_data, adapt_q_data, s_y, adapt_q_y, sampled_task,
-                    know_w=float(self.args.know_weight), know_temp=self.args.know_temp,
-                )
-                s_logit, q_logit, s_label, q_label = result[:4]
-                inner_loss = self.cls_criterion(s_logit, s_label)
-                model.adapt(inner_loss)
-            model.eval()
+            except StopIteration:
+                adapt_q_iter = iter(adapt_loader)
+                adapt_q_data = next(adapt_q_iter)
+            know = self._build_knowledge(s_list, adapt_q_data.to_data_list())
+            self._attach_knowledge(adapt_q_data, know)
+            adapt_q_data = adapt_q_data.to(self.device)
+            adapt_q_y = self._eval_labels(adapt_q_data, sampled_task)
+            result = model(
+                s_data, adapt_q_data, s_y, adapt_q_y, sampled_task,
+                know_w=float(self.args.know_weight), know_temp=self.args.know_temp,
+            )
+            s_logit, q_logit, s_label, q_label = result[:4]
+            inner_loss = self.cls_criterion(s_logit, s_label)
+            model.adapt(inner_loss)
+        model.eval()
+        return model, s_list, s_data, s_y, sampled_task, q_data
+
+    def test_step(self, output_dir):
+        with prediction_writer(output_dir, self.args.save_predictions) as output:
+            return self._evaluate(output_dir, output)
+
+    def _evaluate(self, output_dir, prediction_output):
+        rows = []
+        episodes = read_episodes(self.args.eval_manifest, self.dataset, self.n_support,
+                                 self.args.random_seed)
+        for episode in tqdm(episodes, total=20 * len(self.test_task_range), desc="eval"):
+            task_i = episode["task_id"]
+            model, s_list, s_data, s_y, sampled_task, q_data = self.prepare_eval_episode(episode)
 
             y_pred, y_true = [], []
-            query_loader = DataLoader(q_data, batch_size=self.args.test_batch_size, num_workers=2, shuffle=False)
+            query_loader = DataLoader(q_data, batch_size=self.args.test_batch_size, num_workers=0, shuffle=False)
             with torch.no_grad():
                 for iter_q_data in query_loader:
                     know = self._build_knowledge(s_list, iter_q_data.to_data_list())
                     self._attach_knowledge(iter_q_data, know)
                     iter_q_data = iter_q_data.to(self.device)
-                    iter_q_y = iter_q_data.y[:, sampled_task]
+                    true_labels = iter_q_data.y[:, task_i].clone()
+                    iter_q_y = self._eval_labels(iter_q_data, sampled_task)
                     result = model(
                         s_data, iter_q_data, s_y, iter_q_y, sampled_task,
                         know_w=float(self.args.know_weight), know_temp=self.args.know_temp,
                     )
                     _, q_logit, _, q_label, _, s_feat, q_feat, _ = result
                     q_logit = torch.sigmoid(q_logit).cpu().view(-1)
-                    q_label = q_label.cpu().view(-1)
+                    q_label = true_labels.cpu().view(-1)
                     y_pred.append(q_logit)
                     y_true.append(q_label)
 
                 y_true = torch.cat(y_true, dim=0).numpy()
                 y_pred = torch.cat(y_pred, dim=0).numpy()
-                score = roc_auc_score(y_true, y_pred)
-                auc_scores.append(score)
-        return np.mean(auc_scores)
+                metrics = episode_metrics(y_true, y_pred, episode["query_indices"])
+                write_predictions(prediction_output, task_i, episode["support_repeat"],
+                                  episode["query_indices"], y_true, y_pred, self.dataset)
+                rows.append({"task_id": task_i, "support_repeat": episode["support_repeat"], **metrics})
+        assays, summary = summarize(rows)
+        for name, records in [("per_episode_metrics", rows), ("per_assay_metrics", assays)]:
+            with open(os.path.join(output_dir, name + ".csv"), "w", newline="") as stream:
+                writer = csv.DictWriter(stream, fieldnames=list(records[0]))
+                writer.writeheader()
+                writer.writerows(records)
+        summary.update(dataset=self.args.dataset, training_seed=self.args.random_seed,
+                       shot=self.n_support, endpoint=self.args.episode,
+                       conditioning=self.maml.module.conditioning,
+                       train_auxi_task_num=self.train_auxi_task_num,
+                       test_auxi_task_num=self.test_auxi_task_num,
+                       rel_nan_w=self.args.rel_nan_w,
+                       fingerprint_mode=self.args.fingerprint_mode, mask_query_aux=self.args.mask_query_aux,
+                       manifest_sha256=manifest_hash(self.args.eval_manifest))
+        write_run_metadata_and_screening(output_dir, self.args, rows, summary)
+        with open(os.path.join(output_dir, "summary.json"), "w") as stream:
+            json.dump(summary, stream, indent=2)
+        return summary["AUROC_pct"] / 100
+
 
     def sample_tasks(self, epoch):
         def sample_data(tgt_id):
@@ -520,6 +572,7 @@ class MetaLearner:
             ).tolist()
         else:
             # Default: uniform random sampling
-            selected_ids = np.random.choice(auxi_task_range, auxi_task_num, replace=False).tolist()
+            size = min(auxi_task_num, len(auxi_task_range))
+            selected_ids = np.random.choice(auxi_task_range, size, replace=False).tolist()
         
         return selected_ids

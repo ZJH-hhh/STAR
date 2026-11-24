@@ -27,6 +27,7 @@ import os
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
+from semantic_utils import load_task_embeddings
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -76,7 +77,7 @@ class SemanticGuidedSampler(nn.Module):
         if not os.path.exists(embedding_path):
             raise FileNotFoundError(f"Embedding file not found: {embedding_path}")
         
-        data = torch.load(embedding_path, map_location='cpu')
+        data = load_task_embeddings(embedding_path)
         loaded_encoder = validate_semantic_embedding_metadata(
             data=data,
             expected_encoder=self.expected_encoder,
@@ -87,8 +88,7 @@ class SemanticGuidedSampler(nn.Module):
         # 获取嵌入矩阵和属性名
         self.embedding_matrix = data['embedding_matrix']  # [num_properties, embedding_dim]
         self.property_names = data.get('sorted_names', data.get('property_names', []))
-        self.embedding_dim = data['embedding_dim']
-        self.num_properties = data['num_properties']
+        self.num_properties, self.embedding_dim = self.embedding_matrix.shape
         
         # L2 归一化（确保余弦相似度计算正确）
         self.embedding_matrix = F.normalize(self.embedding_matrix, p=2, dim=1)

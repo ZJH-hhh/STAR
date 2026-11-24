@@ -3,7 +3,6 @@ from torch_geometric.nn import MessagePassing
 from torch_geometric.utils import add_self_loops, softmax
 from torch_geometric.nn import global_add_pool, global_mean_pool, global_max_pool, GlobalAttention, Set2Set
 import torch.nn.functional as F
-from torch_scatter import scatter_add
 from torch_geometric.nn.inits import glorot, zeros
 import logging
 logger = logging.getLogger()
@@ -81,7 +80,7 @@ class GCNConv(MessagePassing):
         edge_weight = torch.ones((edge_index.size(1),), dtype=dtype,
                                  device=edge_index.device)
         row, col = edge_index
-        deg = scatter_add(edge_weight, row, dim=0, dim_size=num_nodes)
+        deg = edge_weight.new_zeros(num_nodes).index_add_(0, row, edge_weight)
         deg_inv_sqrt = deg.pow(-0.5)
         deg_inv_sqrt[deg_inv_sqrt == float('inf')] = 0
 

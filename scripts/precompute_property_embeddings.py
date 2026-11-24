@@ -1,28 +1,21 @@
 #!/usr/bin/env python
-"""
-预计算属性描述嵌入
-==================
+"""Build frozen assay-text resources from electronic Table S27, in dataset-local task order.
 
-为 SIDER 和 Tox21 数据集的属性描述生成语义嵌入向量。
-支持多种编码器后端：
-1. BERT (本地/缓存)
-2. SentenceTransformers (如果可用)
-3. 简单的 TF-IDF + SVD (无需深度学习模型)
-
-Usage:
-    python scripts/precompute_property_embeddings.py --dataset sider --encoder bert
-    python scripts/precompute_property_embeddings.py --dataset tox21 --encoder tfidf
-    python scripts/precompute_property_embeddings.py --dataset all --encoder bert
-
-Output:
-    data/embeddings/sider_property_embeddings.pt
-    data/embeddings/tox21_property_embeddings.pt
+For full descriptions, literal names and fixed random/shuffled controls, use
+--dataset all --fit_scope both --text_table <S27.csv> --split_table <S26.csv>.
+Use --output_dir to select a new text_embeddings directory. Each full/name
+resource records its fitted width before any zero padding. Exact historical
+replay uses the native resource identified by Table S28.
 """
 
 import os
 import sys
 import argparse
 import json
+import hashlib
+import pickle
+import re
+from collections import Counter
 from pathlib import Path
 
 import torch
@@ -32,8 +25,7 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from data.property_descriptions import (SIDER_DESCRIPTIONS, TOX21_DESCRIPTIONS, MUV_DESCRIPTIONS,
-                                        PCBA_DESCRIPTIONS, get_all_descriptions)
+import csv
 from semantic_utils import SEMANTIC_EMBEDDING_DIRS, normalize_semantic_encoder
 
 
@@ -212,7 +204,7 @@ def save_embeddings(embeddings: dict, output_path: Path, metadata: dict = None):
         save_data['metadata'] = metadata
     
     # 构建嵌入矩阵（按属性名排序）
-    sorted_names = sorted(embeddings.keys())
+    sorted_names = list(embeddings)  # S27 order follows dataset-local task IDs
     embedding_matrix = torch.stack([embeddings[name] for name in sorted_names])
     save_data['embedding_matrix'] = embedding_matrix
     save_data['sorted_names'] = sorted_names
@@ -246,7 +238,7 @@ def compute_similarity_matrix(embeddings: dict) -> tuple:
     Returns:
         (similarity_matrix, sorted_names)
     """
-    sorted_names = sorted(embeddings.keys())
+    sorted_names = list(embeddings)  # S27 order follows dataset-local task IDs
     vectors = torch.stack([embeddings[name] for name in sorted_names])
     
     # L2 归一化
@@ -297,35 +289,167 @@ def visualize_similarity(similarity: torch.Tensor, names: list, output_path: Pat
     plt.close()
 
 
-def get_property_names_from_csv(dataset: str, data_root: Path) -> list:
-    """从CSV文件提取属性名称列表"""
-    import pandas as pd
-    
-    csv_path = data_root / dataset / f"{dataset}.csv"
-    if not csv_path.exists():
-        raise FileNotFoundError(f"CSV file not found: {csv_path}")
-    
-    try:
-        # 读取CSV的第一行（列名）
-        df = pd.read_csv(csv_path, nrows=0)
-        columns = list(df.columns)
-        
-        # 移除SMILES列
-        property_cols = [col for col in columns if col.lower() not in ['smiles', 'mol_id', 'id']]
-        
-        return property_cols
-    except Exception as e:
-        print(f"Error reading CSV for {dataset}: {e}")
-        print("Trying alternative method...")
-        
-        # 备选方法：直接读取第一行
-        with open(csv_path, 'r') as f:
-            header = f.readline().strip()
-            if 'git-lfs' in header.lower():
-                raise ValueError(f"CSV file for {dataset} is a Git LFS pointer. Please run 'git lfs pull' first.")
-            columns = header.split(',')
-            property_cols = [col for col in columns if col.lower() not in ['smiles', 'mol_id', 'id']]
-            return property_cols
+def read_text_table(path):
+    by_dataset = {}
+    with open(path, newline="", encoding="utf-8-sig") as stream:
+        for row in csv.DictReader(stream):
+            by_dataset.setdefault(row["dataset"], []).append(row)
+    return by_dataset
+
+
+def ordered_rows(records):
+    rows = sorted(records, key=lambda row: int(row["task_id"]))
+    if not rows or [int(row["task_id"]) for row in rows] != list(range(len(rows))):
+        raise ValueError("Expected consecutive dataset-local task IDs starting at zero")
+    for row in rows:
+        if row["split"] not in {"train", "test"}:
+            raise ValueError(f"Invalid split for task {row['task_id']}")
+        digest = row.get("processed_text_sha256")
+        if digest and hashlib.sha256(row["processed_text"].encode("utf-8")).hexdigest() != digest:
+            raise ValueError(f"S27 text hash mismatch for task {row['task_id']}")
+    return rows
+
+
+def normalize_rows(matrix):
+    lengths = np.linalg.norm(matrix, axis=1, keepdims=True)
+    return matrix / np.where(lengths > 0, lengths, 1)
+
+
+def numpy_tfidf_svd(texts):
+    """Rebuild the all-corpus protocol. Vocabulary tie order and SVD signs are explicit."""
+    from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
+
+    counts = []
+    total = Counter()
+    for text in texts:
+        words = [w for w in re.findall(r"(?u)\b\w\w+\b", text.lower()) if w not in ENGLISH_STOP_WORDS]
+        terms = Counter(words)
+        terms.update(a + " " + b for a, b in zip(words, words[1:]))
+        counts.append(terms)
+        total.update(terms)
+    vocab = sorted(sorted(total, key=lambda term: (-total[term], term))[:5000])
+    width = min(128, len(texts) - 1, len(vocab))
+    if width < 1:
+        raise ValueError("TF-IDF/SVD requires at least two fitted texts and a nonempty vocabulary")
+    indices = {term: i for i, term in enumerate(vocab)}
+    tf = np.zeros((len(texts), len(vocab)))
+    for row, terms in enumerate(counts):
+        for term, count in terms.items():
+            if term in indices:
+                tf[row, indices[term]] = count
+    idf = np.log((1 + len(texts)) / (1 + np.count_nonzero(tf, axis=0))) + 1
+    matrix = normalize_rows(tf * idf)
+    rng = np.random.RandomState(42)
+    subspace = rng.normal(size=(len(vocab), min(width + 10, *matrix.shape)))
+    q = np.linalg.qr(matrix @ subspace, mode="reduced")[0]
+    for _ in range(5):
+        right = np.linalg.qr(matrix.T @ q, mode="reduced")[0]
+        q = np.linalg.qr(matrix @ right, mode="reduced")[0]
+    _, singular, right = np.linalg.svd(q.T @ matrix, full_matrices=False)
+    components = right[:width]
+    pivots = components[np.arange(width), np.argmax(np.abs(components), axis=1)]
+    components *= np.where(pivots < 0, -1., 1.)[:, None]
+    embedding = normalize_rows(matrix @ components.T).astype(np.float32)
+    return embedding, dict(vocabulary=np.asarray(vocab), idf=idf, components=components,
+                           singular_values=singular[:width])
+
+
+def train_only_tfidf_svd(texts, train):
+    from sklearn.decomposition import TruncatedSVD
+    from sklearn.feature_extraction.text import TfidfVectorizer
+
+    if len(train) < 2:
+        raise ValueError("Train-only TF-IDF/SVD requires at least two training tasks")
+    vectorizer = TfidfVectorizer(stop_words="english", ngram_range=(1, 2), max_features=5000)
+    fitted = vectorizer.fit_transform([texts[i] for i in train])
+    all_rows = vectorizer.transform(texts)
+    width = min(128, len(train) - 1, fitted.shape[1])
+    if fitted.shape[1] == 1:
+        # For a single feature the right singular vector is the positive unit scalar.
+        svd = None
+        projected = all_rows.toarray()
+    else:
+        svd = TruncatedSVD(n_components=width, n_iter=5, random_state=42)
+        svd.fit(fitted)
+        projected = svd.transform(all_rows)
+    return normalize_rows(projected).astype(np.float32), dict(vectorizer=vectorizer, svd=svd)
+
+
+def derangement(size, rng):
+    if size < 2:
+        raise ValueError("A shuffled-description control requires at least two assays per shuffled pool")
+    ids = np.arange(size)
+    while True:
+        shuffled = rng.permutation(size)
+        if np.all(shuffled != ids):
+            return shuffled
+
+
+def build_revision_resources(rows, directory, scope, seeds=(0, 1, 2)):
+    """Generate new resource files in S28 layout. Input must be one physical dataset."""
+    import sklearn
+    rows = ordered_rows(rows)
+    names = [r["task_name"] for r in rows]
+    ids = np.arange(len(rows))
+    train = [i for i, r in enumerate(rows) if r["split"] == "train"]
+    test = [i for i, r in enumerate(rows) if r["split"] == "test"]
+    all_corpus = scope == "all-corpus"
+    if scope not in {"all-corpus", "meta-train-only"}:
+        raise ValueError(f"Unknown fit scope: {scope}")
+    dest = directory / "all_corpus" if all_corpus else directory
+    dest.mkdir(parents=True, exist_ok=True)
+    meta = dict(dataset=rows[0]["dataset"], encoder="tfidf", fit_scope=scope,
+                fit_task_ids=ids.tolist() if all_corpus else train,
+                implementation="numpy" if all_corpus else "scikit-learn",
+                numpy_version=np.__version__, sklearn_version=sklearn.__version__,
+                provenance="Recomputed from supplied S27 texts; use archived objects for exact replay.")
+
+    def save(stem, matrix, settings, fitted=None):
+        details = dict(meta, variant=stem, output_embedding_dim=matrix.shape[1], **settings)
+        if all_corpus:
+            np.savez_compressed(dest / (stem + ".npz"), task_ids=ids, task_names=np.asarray(names),
+                                embedding_matrix=matrix, **(fitted or {}))
+        else:
+            torch.save(dict(task_ids=ids.tolist(), property_names=names,
+                            embedding_matrix=torch.from_numpy(matrix), metadata=details),
+                       dest / (stem + ".pt"))
+            if fitted is not None:
+                with (dest / (stem + ".pkl")).open("wb") as stream:
+                    pickle.dump(dict(fitted, metadata=details), stream)
+        with (dest / (stem + ".json")).open("w", encoding="utf-8") as stream:
+            json.dump(details, stream, indent=2, ensure_ascii=False)
+
+    for stem, column in [("full", "processed_text"), ("name", "names_only_text")]:
+        texts = [r[column] for r in rows]
+        if all_corpus:
+            matrix, fitted = numpy_tfidf_svd(texts)
+            v = len(fitted["vocabulary"])
+        else:
+            matrix, fitted = train_only_tfidf_svd(texts, train)
+            v = len(fitted["vectorizer"].vocabulary_)
+        fitted_width = matrix.shape[1]
+        if stem == "full":
+            full = matrix
+        else:
+            padding = full.shape[1] - fitted_width
+            if padding < 0:
+                raise ValueError("Names-only fit exceeds Full width; verify the S27 inputs")
+            matrix = np.pad(matrix, ((0, 0), (0, padding)))
+        save(stem, matrix, dict(fitted_dimension=fitted_width, vocabulary_size=v, svd_seed=42), fitted)
+    for seed in seeds:
+        rng = np.random.RandomState(seed)
+        perm = ids.copy()
+        pools = [ids] if all_corpus else [np.asarray(train), np.asarray(test)]
+        for pool in pools:
+            if len(pool):
+                perm[pool] = pool[derangement(len(pool), rng)]
+        save(f"shuffled_seed{seed}", full[perm],
+             dict(control_seed=seed, source_task_ids=perm.tolist(),
+                  permutation_scope="partition" if all_corpus else "within each split"))
+        random_matrix = normalize_rows(np.random.RandomState(seed).normal(size=full.shape))
+        save(f"random_seed{seed}", random_matrix.astype(np.float32),
+             dict(control_seed=seed, distribution="L2-normalized standard Gaussian"))
+    return full
 
 
 def main():
@@ -344,22 +468,37 @@ def main():
     parser.add_argument("--visualize", action="store_true",
                         help="生成相似度矩阵可视化")
     
+    parser.add_argument("--text_table", default="Supplementary_Processed_Texts.csv",
+                        help="Electronic Table S27, in its original CSV format")
+    parser.add_argument("--split_table", help="Optional S26 CSV for checking the split labels in S27")
+    parser.add_argument("--fit_scope", choices=["all-corpus", "meta-train-only", "both", "legacy"],
+                        default="all-corpus", help="TF-IDF resource to generate. Legacy exports the old PT layout.")
     args = parser.parse_args()
+    by_dataset = read_text_table(args.text_table)
     args.encoder = normalize_semantic_encoder(args.encoder)
     
     # 确定要处理的数据集
     if args.dataset == "all":
-        # 扫描data目录下的所有数据集
-        data_root = PROJECT_ROOT / args.data_root
-        datasets = []
-        for item in data_root.iterdir():
-            if item.is_dir() and item.name not in ['embeddings', '__pycache__']:
-                csv_file = item / f"{item.name}.csv"
-                if csv_file.exists():
-                    datasets.append(item.name)
-        print(f"Found {len(datasets)} datasets: {', '.join(datasets)}")
+        datasets = sorted(by_dataset)
     else:
         datasets = [args.dataset]
+
+    if args.encoder == "tfidf" and args.fit_scope != "legacy":
+        split_data = read_text_table(args.split_table) if args.split_table else None
+        scopes = ["all-corpus", "meta-train-only"] if args.fit_scope == "both" else [args.fit_scope]
+        output = Path(args.output_dir or PROJECT_ROOT / "recomputed" / "text_embeddings")
+        for dataset in datasets:
+            rows = ordered_rows(by_dataset[dataset])
+            if split_data is not None:
+                labels = [(int(r["task_id"]), r["split"]) for r in split_data[dataset]]
+                if sorted(labels) != [(int(r["task_id"]), r["split"]) for r in rows]:
+                    raise ValueError(f"S26 and S27 task IDs or splits differ for {dataset}")
+            for scope in scopes:
+                full = build_revision_resources(rows, output / dataset, scope)
+                if args.visualize:
+                    visualize_similarity(torch.from_numpy(full @ full.T), [r["task_name"] for r in rows],
+                                         output / dataset / f"{scope}_similarity.png")
+        return
     
     # 确定编码器
     encoder_fn = {
@@ -386,31 +525,12 @@ def main():
         print(f"Processing {dataset.upper()} dataset")
         print(f"{'='*60}")
         
-        # 获取描述
-        if dataset == "sider":
-            descriptions = SIDER_DESCRIPTIONS
-        elif dataset == "tox21":
-            descriptions = TOX21_DESCRIPTIONS
-        elif dataset == "muv":
-            descriptions = MUV_DESCRIPTIONS
-        elif dataset == "pcba":
-            descriptions = PCBA_DESCRIPTIONS
-            print(f"Using pre-generated descriptions for {len(descriptions)} properties")
-        else:
-            # 自动生成描述（用于pcba和toxcast-*）
-            try:
-                property_names = get_property_names_from_csv(dataset, data_root)
-                if len(property_names) < 2:
-                    print(f"Warning: Only {len(property_names)} properties found (likely Git LFS issue)")
-                    print(f"Skipping {dataset}... (run 'git lfs pull' to download large CSV files)")
-                    continue
-                descriptions = get_all_descriptions(dataset, property_names)
-                print(f"Auto-generated descriptions for {len(descriptions)} properties")
-            except Exception as e:
-                print(f"Error processing {dataset}: {e}")
-                print(f"Skipping {dataset}...")
-                continue
-        
+        rows = sorted(by_dataset[dataset], key=lambda row: int(row["task_id"]))
+        if [int(row["task_id"]) for row in rows] != list(range(len(rows))):
+            raise ValueError(f"Invalid dataset-local task IDs for {dataset}")
+        descriptions = {row["task_name"]: row["processed_text"] for row in rows}
+        if len(descriptions) != len(rows):
+            raise ValueError(f"Duplicate task name in {dataset}")
         print(f"Total {len(descriptions)} properties")
         
         # 编码

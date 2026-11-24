@@ -11,13 +11,15 @@ from .krgts_hgnn import HMRGNN
 class KRGTSRelation(nn.Module):
     """Stage-B relation backend built on the HMRGNN encoder."""
 
-    def __init__(self, in_dim, total_tasks, train_tasks, args):
+    def __init__(self, in_dim, total_tasks, train_tasks, args, test_task_ids=None):
         super().__init__()
         self.args = args
         self.hidden_dim = args.rel_hidden_dim
         self.input_dim = in_dim
         self.task_emb = nn.Embedding(total_tasks, in_dim)
-        self.task_emb.weight.data[train_tasks:, :] = 0
+        held_out = slice(train_tasks, None) if test_task_ids is None else test_task_ids
+        with torch.no_grad():
+            self.task_emb.weight[held_out, :] = 0
         self.pre_dropout = nn.Dropout(args.rel_pre_dropout) if args.rel_pre_dropout > 0 else None
         self.input_proj = nn.Linear(in_dim, self.hidden_dim)
         self.graph_encoder = HMRGNN(
@@ -132,7 +134,7 @@ class KRGTSRelation(nn.Module):
     ):
         device = sample_emb.device
         if know_components is None or know_components.get('sca') is None:
-            zeros = torch.zeros(sample_emb.shape[0], sample_emb.shape[1], sample_emb.shape[2], device=device)
+            zeros = sample_emb.new_zeros(sample_emb.shape[0], sample_emb.shape[1], sample_emb.shape[1])
             know_components = {"sca": zeros, "gro": zeros}
         else:
             source = know_components

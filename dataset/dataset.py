@@ -1,6 +1,7 @@
 import os
 import os.path as osp
-import re
+import csv
+from functools import lru_cache
 import pickle
 import random
 import tqdm
@@ -41,11 +42,14 @@ class FewshotMolDataset(InMemoryDataset):
     }
 
     def __init__(self, root, name, transform=None, pre_transform=None,
-                 pre_filter=None, compute_knowledge=False):
+                 pre_filter=None, compute_knowledge=False, fingerprint_mode='corrected'):
 
         if Chem is None:
             raise ImportError('`MoleculeNet` requires `rdkit`.')
 
+        if fingerprint_mode not in ('corrected', 'legacy'):
+            raise ValueError('Unknown fingerprint mode: ' + fingerprint_mode)
+        self.fingerprint_mode = fingerprint_mode
         self.name = name
         assert self.name in self.names.keys()
         super(FewshotMolDataset, self).__init__(root, transform, pre_transform, pre_filter)
@@ -59,23 +63,19 @@ class FewshotMolDataset(InMemoryDataset):
             self.test_task_range = list(range(5)) + list(range(self.total_tasks - 5, self.total_tasks))
 
         self.data, self.slices = self._load_processed_tensor(self.processed_paths[0])
-        self.index_list = pickle.load(open(self.processed_paths[1], 'rb'))
-        self.y_matrix = np.load(open(self.processed_paths[2], 'rb'))
+        with open(self.processed_paths[1], 'rb') as stream:
+            self.index_list = pickle.load(stream)
+        self.y_matrix = np.load(self.processed_paths[2])
         self._scaffold_cache = {}
         self._compute_knowledge = compute_knowledge
-        # lazily add knowledge features when requested and missing
-        if compute_knowledge:
-            self._maybe_add_knowledge_features()
+        # PyG subsets shallow-copy the dataset. Share the bounded feature cache.
 
     def get(self, idx):
-        """Override get method to ensure fingerprint and groupprint are available."""
         data = super().get(idx)
-        # If knowledge features are needed but missing, compute them on-the-fly
         if self._compute_knowledge:
-            if not hasattr(data, 'fingerprint') or not hasattr(data, 'groupprint'):
-                fp, gp = self._compute_fingerprint_group(data.smiles)
-                data.fingerprint = fp
-                data.groupprint = gp
+            # Historical data.pt can contain unversioned, scaffold-gated values.
+            fp, gp = self._compute_fingerprint_group(data.smiles, self.fingerprint_mode)
+            data.fingerprint, data.groupprint = fp.clone(), gp.clone()
         return data
 
     @staticmethod
@@ -125,21 +125,22 @@ class FewshotMolDataset(InMemoryDataset):
         groups = sorted(list(set(groups)))
         return groups
 
-    def _compute_fingerprint_group(self, smiles):
+    @staticmethod
+    @lru_cache(maxsize=8192)
+    def _compute_fingerprint_group(smiles, fingerprint_mode="corrected"):
         mol = Chem.MolFromSmiles(smiles)
         if mol is None:
-            return torch.zeros(2214), torch.zeros(49)
-        scaffold = MurckoScaffold.MurckoScaffoldSmiles(smiles)
+            raise ValueError("Invalid SMILES in processed dataset: " + repr(smiles))
         # fingerprint: MACCS(166 bits after removing first) + Morgan(2048)
-        if scaffold == '':
+        if fingerprint_mode == "legacy" and not MurckoScaffold.MurckoScaffoldSmiles(mol=mol):
             fp = torch.zeros(2214)
         else:
-            maccs = torch.LongTensor(MACCSkeys.GenMACCSKeys(mol))[1:].to(torch.long)  # 166
+            maccs = torch.LongTensor(list(MACCSkeys.GenMACCSKeys(mol)))[1:].to(torch.long)  # 166
             mgen = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=2048)
             morgan = torch.LongTensor(list(mgen.GetFingerprint(mol)))
             fp = torch.cat([maccs, morgan], dim=-1).float()
         # groupprint: 49 dim
-        gids = self._fgroups_ids(mol)
+        gids = FewshotMolDataset._fgroups_ids(mol)
         gp = torch.zeros(49)
         if len(gids) > 0:
             valid = [g for g in gids if 0 <= g < 49]
@@ -147,35 +148,16 @@ class FewshotMolDataset(InMemoryDataset):
                 gp[valid] = 1.0
         return fp, gp
 
-    def _maybe_add_knowledge_features(self):
-        # Check a sample
-        try:
-            sample = self[0]
-            if hasattr(sample, 'fingerprint') and hasattr(sample, 'groupprint'):
-                return
-        except Exception as e:
-            print(f"Warning: Could not check for existing features: {e}")
-        
-        print("Computing fingerprint and groupprint features for all molecules...")
-        data_list = [self.get(i) for i in range(len(self))]
-        for d in tqdm.tqdm(data_list, desc='Computing knowledge features'):
-            fp, gp = self._compute_fingerprint_group(d.smiles)
-            d.__setattr__('fingerprint', fp)
-            d.__setattr__('groupprint', gp)
-        print("Saving updated dataset with knowledge features...")
-        torch.save(self.collate(data_list), self.processed_paths[0])
-
     def process(self):
-        with open(self.raw_paths[0], 'r') as f:
-            dataset = f.read().split('\n')[1:-1]
-            dataset = [x for x in dataset if len(x) > 0]  # Filter empty lines.
+        with open(self.raw_paths[0], newline='', encoding='utf-8-sig') as f:
+            reader = csv.reader(f)
+            next(reader)
+            dataset = [row for row in reader if row]
 
         data_list = []
         y_list = []
         data_id = 0
         for line in tqdm.tqdm(dataset):
-            line = re.sub(r'\".*?\"', '', line)  # Replace ".*?" strings (non-greedy).
-            line = line.split(',')
             smiles = line[self.names[self.name][3]]
             mol = Chem.MolFromSmiles(smiles)
             if mol is None:
@@ -187,7 +169,6 @@ class FewshotMolDataset(InMemoryDataset):
 
             ys = [float(y) if len(y) > 0 else float('NaN') for y in ys]
             y = torch.tensor(ys, dtype=torch.float).view(1, -1)
-            y_list.append(ys)
 
             xs = []
             for atom in mol.GetAtoms():
@@ -220,7 +201,6 @@ class FewshotMolDataset(InMemoryDataset):
                 edge_index, edge_attr = edge_index[:, perm], edge_attr[perm]
 
             data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, y=y, smiles=smiles, id=data_id)
-            data_id += 1
 
             if self.pre_filter is not None and not self.pre_filter(data):
                 continue
@@ -229,6 +209,8 @@ class FewshotMolDataset(InMemoryDataset):
                 data = self.pre_transform(data)
 
             data_list.append(data)
+            y_list.append(ys)
+            data_id += 1
 
         y_matrix = np.array(y_list)
         index_list = []  # [[[],[]], [[],[]]], task-label-index
@@ -239,8 +221,10 @@ class FewshotMolDataset(InMemoryDataset):
             index_list.append([class0_index, class1_index])
 
         torch.save(self.collate(data_list), self.processed_paths[0])
-        pickle.dump(index_list, open(self.processed_paths[1], 'wb'))
-        np.save(open(self.processed_paths[2], 'wb'), y_matrix)
+        with open(self.processed_paths[1], 'wb') as stream:
+            pickle.dump(index_list, stream)
+        with open(self.processed_paths[2], 'wb') as stream:
+            np.save(stream, y_matrix)
 
     def __repr__(self):
         return '{}({})'.format(self.names[self.name][0], len(self))

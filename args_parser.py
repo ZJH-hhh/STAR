@@ -1,4 +1,6 @@
 import argparse
+import csv
+import os
 
 from semantic_utils import default_semantic_embedding_path, normalize_semantic_encoder
 
@@ -40,7 +42,8 @@ def args_parser():
     parser.add_argument("--rel_edge_hidden_dim", default=100, type=int)
     parser.add_argument("--rel_dropout", default=0.1, type=float)
     parser.add_argument("--rel_pre_dropout", default=0.1, type=float)
-    parser.add_argument("--rel_nan_w", default=1., type=float)
+    parser.add_argument("--rel_nan_w", default=0., type=float,
+                        help="Weight of explicit missing-label edges. Zero uses observed labels only.")
     parser.add_argument("--rel_nan_type", default='nan', type=str, choices=['nan', '0', '1'])
     parser.add_argument("--rel_batch_norm", default=1, type=int)
     parser.add_argument("--rel_edge_type", default=1, type=int)
@@ -82,11 +85,21 @@ def args_parser():
     # few-shot
     parser.add_argument("--episode", default=2000, type=int)
     parser.add_argument("--n_support", default=10, type=int)
-    parser.add_argument("--n_query", default=16, type=int)
+    parser.add_argument("--n_query", default=8, type=int)
     parser.add_argument("--n_test_tasks", default=200, type=int)
-    parser.add_argument("--eval_step", default=100, type=int)
+    parser.add_argument("--revision_root", default=".", help="Extracted revision data directory")
+    parser.add_argument("--eval_manifest", help="Override the archived JSONL support/query manifest")
+    parser.add_argument("--fingerprint_mode", choices=["corrected", "legacy"], default="corrected")
+    parser.add_argument("--mask_query_aux", action="store_true", help="Hide query auxiliary labels during evaluation")
+    parser.add_argument("--eval_checkpoint", help="Evaluate a saved fixed-endpoint model without training")
+    parser.add_argument("--save_predictions", action="store_true",
+                        help="Export compressed molecule predictions and empty-scaffold flags")
+    parser.add_argument("--attribution_episodes",
+                        help="Analyze selected query molecules using supplied attribution episodes and checkpoint")
+
     parser.add_argument("--test_batch_size", default=128, type=int)
-    parser.add_argument("--train_auxi_task_num", default=None, type=int)
+    parser.add_argument("--train_auxi_task_num", default=None, type=int,
+                        help="Optional training draw count; by default use all other meta-training assays.")
     parser.add_argument("--test_auxi_task_num", default=None, type=int)
 
     # contrastive
@@ -101,6 +114,10 @@ def args_parser():
     # Semantic-Guided Task Sampling (LLM-based Property Descriptions)
     parser.add_argument("--use_semantic_sampler", default=1, type=int,
                         help="Enable semantic-guided auxiliary task sampling")
+    parser.add_argument("--conditioning", choices=["text", "support_adapted_id"], default="text")
+    parser.add_argument("--id_dim", type=int, help="ID width (default: Full width from S28)")
+    parser.add_argument("--text_fit", choices=["all_corpus", "train_only"], default="all_corpus")
+    parser.add_argument("--text_variant", choices=["full", "name", "shuffled", "random"], default="full")
     parser.add_argument("--semantic_encoder", default="tfidf", type=str,
                         choices=["tfidf", "bert", "sbert", "sentence-transformers"],
                         help="Text encoder used to build property embeddings")
@@ -141,12 +158,40 @@ def args_parser():
     # Semantic Sampler flags
     args.semantic_encoder = normalize_semantic_encoder(args.semantic_encoder)
     args.use_semantic_sampler = bool(args.use_semantic_sampler)
-    if args.use_semantic_sampler and not args.semantic_embedding_path:
-        args.semantic_embedding_path = default_semantic_embedding_path(args.dataset, args.semantic_encoder)
-    
-    # L-TAFM flags
     args.use_ltafm = bool(args.use_ltafm)
-    if args.use_ltafm and not args.semantic_embedding_path:
-        args.semantic_embedding_path = default_semantic_embedding_path(args.dataset, args.semantic_encoder)
-    
+    if args.attribution_episodes and not args.eval_checkpoint:
+        parser.error("--attribution_episodes requires --eval_checkpoint")
+    if args.conditioning == "support_adapted_id":
+        if not args.use_ltafm or args.semantic_embedding_path:
+            parser.error("support_adapted_id uses L-TAFM and takes no text embedding file")
+        args.use_semantic_sampler = False
+        if args.id_dim is None:
+            table = os.path.join(args.revision_root, "Supplementary_Effective_Embedding_Dimensions.csv")
+            if not os.path.isfile(table):
+                parser.error("Provide the S28 table under --revision_root or set --id_dim explicitly")
+            with open(table, encoding="utf-8-sig", newline="") as stream:
+                widths = [int(row[args.text_fit + "_dimension"]) for row in csv.DictReader(stream)
+                          if row["dataset"] == args.dataset]
+            if len(widths) != 1:
+                parser.error("Expected one S28 row for " + args.dataset)
+            args.id_dim = widths[0]
+        if args.id_dim <= 0:
+            parser.error("--id_dim must be positive")
+    elif (args.use_semantic_sampler or args.use_ltafm) and not args.semantic_embedding_path:
+        if args.semantic_encoder == "tfidf":
+            variant = args.text_variant
+            if variant in ("random", "shuffled"):
+                variant += f"_seed{args.random_seed}"
+            directory = os.path.join(args.revision_root, "text_embeddings", args.dataset)
+            if args.text_fit == "all_corpus":
+                args.semantic_embedding_path = os.path.join(directory, "all_corpus", variant + ".npz")
+            else:
+                args.semantic_embedding_path = os.path.join(directory, variant + ".pt")
+        else:
+            args.semantic_embedding_path = default_semantic_embedding_path(args.dataset, args.semantic_encoder)
+    if args.semantic_embedding_path:
+        args.semantic_embedding_path = os.path.abspath(args.semantic_embedding_path)
+    if not args.eval_manifest:
+        args.eval_manifest = os.path.join(args.revision_root, "eval_manifests", args.dataset,
+                                          f"{args.n_support}shot", f"seed_{args.random_seed}.jsonl")
     return args
