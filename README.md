@@ -115,16 +115,3 @@ Run the regression checks from the repository root:
 ```bash
 python -m unittest discover -s tests
 ```
-
-## Acknowledgement
-
-This project builds on GS-Meta:
-
-```bibtex
-@inproceedings{zhuang2023graph,
-  title={Graph Sampling-based Meta-Learning for Molecular Property Prediction},
-  author={Zhuang, Xiang and Zhang, Qiang and Wu, Bin and Ding, Keyan and Fang, Yin and Chen, Huajun},
-  booktitle={IJCAI},
-  year={2023}
-}
-```
